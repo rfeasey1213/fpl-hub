@@ -3,7 +3,8 @@
 // ---------- data ----------
 
 const POSITIONS = { 1: "GKP", 2: "DEF", 3: "MID", 4: "FWD" };
-const D = { meta: null, teams: [], players: [], fixtures: [], prices: { dates: [], prices: {} } };
+const POSITION_NAMES = { 1: "Goalkeeper", 2: "Defender", 3: "Midfielder", 4: "Forward" };
+const D = { meta: null, teams: [], players: [], fixtures: [], prices: { dates: [], prices: {} }, myteam: null };
 const teamById = new Map();
 const playerById = new Map();
 const historyCache = new Map();
@@ -14,13 +15,17 @@ async function getJson(path) {
   if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
   return res.json();
 }
+const optionalJson = (path, fallback) => getJson(path).catch(() => fallback);
 
 async function loadData() {
   const [meta, teams, players, fixtures] = await Promise.all(
     ["meta", "teams", "players", "fixtures"].map((n) => getJson(`data/${n}.json`))
   );
-  Object.assign(D, { meta, teams, players, fixtures });
-  try { D.prices = await getJson("data/prices.json"); } catch { /* first run may not have it */ }
+  const [prices, myteam] = await Promise.all([
+    optionalJson("data/prices.json", D.prices),
+    optionalJson("data/myteam.json", null),
+  ]);
+  Object.assign(D, { meta, teams, players, fixtures, prices, myteam });
   teams.forEach((t) => teamById.set(t.id, t));
   players.forEach((p) => playerById.set(p.id, p));
   upcomingByTeam = buildUpcoming();
@@ -44,8 +49,11 @@ function buildUpcoming() {
   return map;
 }
 
-async function playerHistory(id) {
-  if (!historyCache.has(id)) historyCache.set(id, getJson(`data/players/${id}.json`));
+async function playerDetail(id) {
+  if (!historyCache.has(id)) {
+    historyCache.set(id, getJson(`data/players/${id}.json`).then((d) =>
+      Array.isArray(d) ? { history: d, shots: [] } : d));
+  }
   return historyCache.get(id);
 }
 
@@ -57,13 +65,18 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 const money = (v) => (v == null ? "–" : `£${v.toFixed(1)}m`);
-const dec = (v, n = 1) => (v == null ? "–" : Number(v).toFixed(n));
+const dec = (v, n = 1) => (v == null || Number.isNaN(v) ? "–" : Number(v).toFixed(n));
+const int = (v) => (v == null ? "–" : Number(v).toLocaleString());
 const teamShort = (id) => teamById.get(id)?.short ?? "?";
 const teamName = (id) => teamById.get(id)?.name ?? "?";
 const signed = (v) => (v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1));
+const per90 = (v, mins) => (v == null || !mins || mins < 90 ? null : (v * 90) / mins);
+const teamPill = (id) => `<span class="team-pill">${esc(teamShort(id))}</span>`;
+const posTag = (pos) => `<span class="pos pos-${pos}">${POSITIONS[pos]}</span>`;
+const shortRank = (r) => (r == null ? "–" : r >= 1e6 ? `${(r / 1e6).toFixed(2)}M` : r >= 1e4 ? `${Math.round(r / 1e3)}K` : r.toLocaleString());
 
-function fdrChip(fx) {
-  const label = `${teamShort(fx.opp)} (${fx.home ? "H" : "A"})`;
+function fdrChip(fx, compact = false) {
+  const label = compact ? `${teamShort(fx.opp)}${fx.home ? "" : " (a)"}` : `${teamShort(fx.opp)} (${fx.home ? "H" : "A"})`;
   return `<span class="fdr fdr-${fx.fdr}" title="GW${fx.gw}: ${esc(teamName(fx.opp))} ${fx.home ? "home" : "away"}, difficulty ${fx.fdr}">${esc(label)}</span>`;
 }
 
@@ -78,35 +91,80 @@ function emptyState(html) {
   app.innerHTML = `<div class="empty">${html}</div>`;
 }
 
+function onRowClick(root) {
+  root.addEventListener("click", (e) => {
+    const row = e.target.closest("tr[data-id]");
+    if (row) location.hash = `#/player/${row.dataset.id}`;
+  });
+}
+
+// Primary kit colour per club, for the shirt icons on the My Team pitch.
+const KIT = {
+  ARS: "#ef0107", AVL: "#670e36", BOU: "#da291c", BRE: "#e30613", BHA: "#0057b8", BUR: "#6c1d45", CHE: "#034694",
+  COV: "#59b4e4", CRY: "#1b458f", EVE: "#003399", FUL: "#f2f2f2", HUL: "#f5a12d", IPS: "#3a64a3", LEE: "#f2f2f2",
+  LEI: "#003090", LIV: "#c8102e", MCI: "#6cabdd", MUN: "#da291c", NEW: "#241f20", NFO: "#dd0000", SHU: "#ee2737",
+  SOU: "#d71920", SUN: "#eb172b", TOT: "#f2f2f2", WHU: "#7a263a", WOL: "#fdb913",
+};
+function shirt(p) {
+  const fill = p.pos === 1 ? "#00ff85" : KIT[teamShort(p.team)] || "#8f7b98";
+  return `<svg class="shirt" viewBox="0 0 34 30" aria-hidden="true"><path d="M11 1l-9 5 3 8 4-2v17h16V12l4 2 3-8-9-5c-1 3-3.5 4.5-6 4.5S12 4 11 1z" fill="${fill}" stroke="rgba(0,0,0,0.45)" stroke-width="1"/></svg>`;
+}
+
 // ---------- players ----------
 
-const playerColumns = [
-  { key: "name", label: "Player", left: true, get: (p) => p.name },
-  { key: "team", label: "Team", left: true, get: (p) => teamShort(p.team) },
-  { key: "pos", label: "Pos", left: true, get: (p) => p.pos },
-  { key: "price", label: "Price", get: (p) => p.price, fmt: money },
-  { key: "points", label: "Pts", get: (p) => p.points },
-  { key: "form", label: "Form", get: (p) => p.form, fmt: (v) => dec(v) },
-  { key: "ppg", label: "PPG", get: (p) => p.ppg, fmt: (v) => dec(v) },
-  { key: "own", label: "Own %", get: (p) => p.own, fmt: (v) => dec(v) },
-  { key: "mins", label: "Mins", get: (p) => p.mins },
-  { key: "goals", label: "G", get: (p) => p.goals },
-  { key: "assists", label: "A", get: (p) => p.assists },
-  { key: "xg", label: "xG", get: (p) => p.xg, fmt: (v) => dec(v, 2) },
-  { key: "xa", label: "xA", get: (p) => p.xa, fmt: (v) => dec(v, 2) },
-  { key: "xgi", label: "xGI", get: (p) => p.xgi, fmt: (v) => dec(v, 2) },
-  { key: "cs", label: "CS", get: (p) => p.cs },
-  { key: "bonus", label: "Bonus", get: (p) => p.bonus },
-];
+const us = (k) => (p) => p.us?.[k] ?? null;
+const COLUMNS = {
+  price: { label: "Price", get: (p) => p.price, fmt: money },
+  points: { label: "Pts", get: (p) => p.points, hot: true },
+  form: { label: "Form", get: (p) => p.form, fmt: (v) => dec(v) },
+  ppg: { label: "PPG", get: (p) => p.ppg, fmt: (v) => dec(v) },
+  own: { label: "Own %", get: (p) => p.own, fmt: (v) => dec(v) },
+  mins: { label: "Mins", get: (p) => p.mins, fmt: int },
+  goals: { label: "G", get: (p) => p.goals },
+  assists: { label: "A", get: (p) => p.assists },
+  xg: { label: "xG", get: (p) => p.xg, fmt: (v) => dec(v, 2) },
+  xa: { label: "xA", get: (p) => p.xa, fmt: (v) => dec(v, 2) },
+  xgi: { label: "xGI", get: (p) => p.xgi, fmt: (v) => dec(v, 2) },
+  xgi90: { label: "xGI/90", get: (p) => per90(p.xgi, p.mins), fmt: (v) => dec(v, 2) },
+  bonus: { label: "Bonus", get: (p) => p.bonus },
+  shots: { label: "Shots", get: us("shots") },
+  keyPasses: { label: "Key passes", get: us("keyPasses") },
+  npxg: { label: "npxG", get: us("npxg"), fmt: (v) => dec(v, 2) },
+  xgChain: { label: "xGChain", get: us("xgChain"), fmt: (v) => dec(v, 2) },
+  xgBuildup: { label: "xGBuildup", get: us("xgBuildup"), fmt: (v) => dec(v, 2) },
+  cs: { label: "CS", get: (p) => p.cs },
+  gc: { label: "GC", get: (p) => p.gc },
+  xgc: { label: "xGC", get: (p) => p.xgc, fmt: (v) => dec(v, 2) },
+  defcon: { label: "Def. contr.", get: (p) => p.defcon },
+  cbi: { label: "CBI", get: (p) => p.cbi },
+  tackles: { label: "Tackles", get: (p) => p.tackles },
+  recoveries: { label: "Recov.", get: (p) => p.recoveries },
+  saves: { label: "Saves", get: (p) => p.saves },
+  ptsPerM: { label: "Pts/£m", get: (p) => p.points / p.price, fmt: (v) => dec(v, 1) },
+  formPerM: { label: "Form/£m", get: (p) => p.form / p.price, fmt: (v) => dec(v, 2) },
+  net: { label: "Net transfers", get: (p) => p.transfersIn - p.transfersOut, fmt: (v) => `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "+" : ""}${v.toLocaleString()}</span>` },
+};
+const VIEWS = {
+  overview: { label: "Overview", cols: ["price", "points", "form", "ppg", "own", "mins", "goals", "assists", "xgi", "bonus"], next: true, sort: "points" },
+  attack: { label: "Attack", cols: ["price", "points", "goals", "xg", "npxg", "shots", "assists", "xa", "keyPasses", "xgi90", "xgChain", "xgBuildup"], sort: "xgi90" },
+  defence: { label: "Defence", cols: ["price", "points", "cs", "gc", "xgc", "defcon", "cbi", "tackles", "recoveries", "saves"], sort: "defcon" },
+  value: { label: "Value", cols: ["price", "points", "ptsPerM", "ppg", "form", "formPerM", "xgi90", "own", "net"], next: true, sort: "ptsPerM" },
+};
+const NAME_SORTS = { name: (p) => p.name, team: (p) => teamShort(p.team), pos: (p) => p.pos };
 
-const playerView = { q: "", pos: "", team: "", maxPrice: "", minMins: "", sort: "points", asc: false };
+const playerView = { view: "overview", q: "", pos: "", team: "", maxPrice: "", minMins: "", sort: "points", asc: false };
 
 function renderPlayers() {
   const teamOptions = [...D.teams].sort((a, b) => a.name.localeCompare(b.name))
     .map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("");
   app.innerHTML = `
-    <h1>Players</h1>
-    <p class="secondary">Every Premier League player in FPL. Click a column to sort, or a player for their gameweek history.</p>
+    <div class="eyebrow">Season ${D.meta.season ? `${D.meta.season}/${String(D.meta.season + 1).slice(2)}` : ""} · Gameweek ${D.meta.currentGw ?? "–"}</div>
+    <h1>Player database</h1>
+    <p class="lede">Every Premier League player in FPL, with Understat shot data. Switch views for attacking, defensive and value stats; click a player for their full profile.</p>
+    <div class="filters">
+      <div class="segmented" id="views">${Object.entries(VIEWS).map(([k, v]) =>
+        `<button data-view="${k}" class="${k === playerView.view ? "on" : ""}">${v.label}</button>`).join("")}</div>
+    </div>
     <div class="filters">
       <label>Search<input type="search" id="f-q" placeholder="Player name"></label>
       <label>Position<select id="f-pos"><option value="">All</option>${
@@ -117,8 +175,7 @@ function renderPlayers() {
       <span class="count" id="count"></span>
     </div>
     <div class="table-wrap"><table>
-      <thead><tr>${playerColumns.map((c) =>
-        `<th class="sortable ${c.left ? "left" : ""}" data-key="${c.key}">${c.label}</th>`).join("")}<th class="left">Next 3</th></tr></thead>
+      <thead id="head"></thead>
       <tbody id="rows"></tbody>
     </table></div>`;
 
@@ -129,23 +186,32 @@ function renderPlayers() {
   };
   bind("f-q", "q"); bind("f-pos", "pos"); bind("f-team", "team"); bind("f-price", "maxPrice"); bind("f-mins", "minMins");
 
-  app.querySelectorAll("th.sortable").forEach((th) => th.addEventListener("click", () => {
+  document.getElementById("views").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-view]");
+    if (!b) return;
+    playerView.view = b.dataset.view;
+    playerView.sort = VIEWS[b.dataset.view].sort;
+    playerView.asc = false;
+    document.querySelectorAll("#views button").forEach((x) => x.classList.toggle("on", x === b));
+    fillPlayerRows();
+  });
+  document.getElementById("head").addEventListener("click", (e) => {
+    const th = e.target.closest("th.sortable");
+    if (!th) return;
     const key = th.dataset.key;
     if (playerView.sort === key) playerView.asc = !playerView.asc;
-    else { playerView.sort = key; playerView.asc = ["name", "team", "pos"].includes(key); }
+    else { playerView.sort = key; playerView.asc = key in NAME_SORTS; }
     fillPlayerRows();
-  }));
-  document.getElementById("rows").addEventListener("click", (e) => {
-    const row = e.target.closest("tr[data-id]");
-    if (row) location.hash = `#/player/${row.dataset.id}`;
   });
+  onRowClick(document.getElementById("rows"));
   fillPlayerRows();
 }
 
 function fillPlayerRows() {
   const v = playerView;
+  const view = VIEWS[v.view];
   const q = v.q.trim().toLowerCase();
-  const col = playerColumns.find((c) => c.key === v.sort);
+  const getter = NAME_SORTS[v.sort] || COLUMNS[v.sort]?.get || COLUMNS.points.get;
   const rows = D.players.filter((p) =>
     (!q || p.name.toLowerCase().includes(q) || p.full.toLowerCase().includes(q)) &&
     (!v.pos || p.pos === +v.pos) &&
@@ -153,24 +219,461 @@ function fillPlayerRows() {
     (!v.maxPrice || p.price <= +v.maxPrice) &&
     (!v.minMins || p.mins >= +v.minMins)
   ).sort((a, b) => {
-    const x = col.get(a), y = col.get(b);
+    const x = getter(a), y = getter(b);
+    if (x == null || y == null) return (x == null) - (y == null);
     const cmp = typeof x === "string" ? x.localeCompare(y) : x - y;
     return (v.asc ? cmp : -cmp) || b.points - a.points;
   });
 
-  app.querySelectorAll("th.sortable").forEach((th) => {
-    th.classList.toggle("sorted", th.dataset.key === v.sort);
-    th.classList.toggle("asc", th.dataset.key === v.sort && v.asc);
-  });
+  const th = (key, label, left) =>
+    `<th class="sortable ${left ? "left" : ""} ${v.sort === key ? `sorted ${v.asc ? "asc" : ""}` : ""}" data-key="${key}">${label}</th>`;
+  document.getElementById("head").innerHTML = `<tr><th class="rank">#</th>${th("name", "Player", true)}${th("team", "Team", true)}${th("pos", "Pos", true)}${
+    view.cols.map((k) => th(k, COLUMNS[k].label)).join("")}${view.next ? '<th class="left">Next 3</th>' : ""}</tr>`;
   document.getElementById("count").textContent = `${rows.length} of ${D.players.length} players`;
-  document.getElementById("rows").innerHTML = rows.map((p) => `
+  document.getElementById("rows").innerHTML = rows.slice(0, 400).map((p, i) => `
     <tr class="clickable" data-id="${p.id}">
-      <td class="name">${esc(p.name)}${statusFlag(p)}</td>
-      <td class="left">${esc(teamShort(p.team))}</td>
-      <td class="left">${POSITIONS[p.pos]}</td>
-      ${playerColumns.slice(3).map((c) => `<td>${c.fmt ? c.fmt(c.get(p)) : c.get(p)}</td>`).join("")}
-      <td class="left">${(upcomingByTeam.get(p.team) || []).slice(0, 3).map(fdrChip).join("")}</td>
-    </tr>`).join("");
+      <td class="rank">${i + 1}</td>
+      <td class="name left">${esc(p.name)}${statusFlag(p)}</td>
+      <td class="left">${teamPill(p.team)}</td>
+      <td class="left">${posTag(p.pos)}</td>
+      ${view.cols.map((k) => {
+        const c = COLUMNS[k], val = c.get(p);
+        return `<td class="${k === v.sort || c.hot ? "hot" : ""}">${val == null ? '<span class="muted">–</span>' : c.fmt ? c.fmt(val) : val}</td>`;
+      }).join("")}
+      ${view.next ? `<td class="left">${(upcomingByTeam.get(p.team) || []).slice(0, 3).map((fx) => fdrChip(fx)).join("")}</td>` : ""}
+    </tr>`).join("") + (rows.length > 400 ? `<tr><td colspan="99" class="muted left">Showing the top 400 – filter to narrow it down.</td></tr>` : "");
+}
+
+// ---------- percentiles ----------
+
+const MIN_PEER_MINS = 450;
+const M = {
+  npxg90: { label: "npxG", get: (p) => per90(p.us?.npxg, p.us?.mins) },
+  xa90: { label: "xA", get: (p) => per90(p.xa, p.mins) },
+  shots90: { label: "Shots", get: (p) => per90(p.us?.shots, p.us?.mins) },
+  kp90: { label: "Key passes", get: (p) => per90(p.us?.keyPasses, p.us?.mins) },
+  chain90: { label: "xGChain", get: (p) => per90(p.us?.xgChain, p.us?.mins) },
+  buildup90: { label: "xGBuildup", get: (p) => per90(p.us?.xgBuildup, p.us?.mins) },
+  xgPerShot: { label: "xG per shot", get: (p) => (p.us?.shots >= 5 ? p.us.xg / p.us.shots : null), plain: true },
+  xgi90: { label: "xGI", get: (p) => per90(p.xgi, p.mins) },
+  defcon90: { label: "Def. contributions", get: (p) => per90(p.defcon, p.mins) },
+  cbi90: { label: "Clear/block/int", get: (p) => per90(p.cbi, p.mins) },
+  tackles90: { label: "Tackles", get: (p) => per90(p.tackles, p.mins) },
+  rec90: { label: "Recoveries", get: (p) => per90(p.recoveries, p.mins) },
+  xgc90: { label: "xG conceded", get: (p) => per90(p.xgc, p.mins), lowerBetter: true },
+  saves90: { label: "Saves", get: (p) => per90(p.saves, p.mins) },
+  cs90: { label: "Clean sheets", get: (p) => per90(p.cs, p.mins) },
+  pts90: { label: "FPL points", get: (p) => per90(p.points, p.mins) },
+  bps90: { label: "BPS", get: (p) => per90(p.bps, p.mins) },
+};
+const METRICS_BY_POS = {
+  1: ["saves90", "xgc90", "cs90", "pts90", "bps90"],
+  2: ["xgi90", "defcon90", "cbi90", "tackles90", "rec90", "xgc90", "chain90", "pts90"],
+  3: ["npxg90", "xa90", "shots90", "kp90", "chain90", "buildup90", "defcon90", "pts90"],
+  4: ["npxg90", "xa90", "shots90", "kp90", "xgPerShot", "chain90", "pts90"],
+};
+
+function percentiles(p) {
+  const peers = D.players.filter((x) => x.pos === p.pos && x.mins >= MIN_PEER_MINS);
+  return METRICS_BY_POS[p.pos].map((key) => {
+    const m = M[key];
+    const value = m.get(p);
+    if (value == null) return null;
+    const vals = peers.map(m.get).filter((v) => v != null);
+    if (vals.length < 5) return null;
+    const below = vals.filter((v) => (m.lowerBetter ? v > value : v < value)).length;
+    const equal = vals.filter((v) => v === value).length;
+    return { key, label: m.label, value, pct: Math.round(((below + equal / 2) / vals.length) * 100), m, peers: vals.length };
+  }).filter(Boolean);
+}
+
+function percentilePanel(p) {
+  const rows = percentiles(p);
+  if (!rows.length) return '<div class="empty">Not enough minutes this season for comparisons.</div>';
+  return `<div class="pct-list">${rows.map((r) => `
+    <div class="pct-row ${r.pct < 35 ? "low" : ""}" title="${r.pct}th percentile among ${r.peers} ${POSITIONS[p.pos]}s">
+      <span class="lab">${r.label}${r.m.plain ? "" : '<span class="muted"> /90</span>'}</span>
+      <div class="pct-track"><div class="pct-fill" style="width:${Math.max(2, r.pct)}%"></div></div>
+      <span class="val"><b>${r.pct}</b><small>${dec(r.value, 2)}</small></span>
+    </div>`).join("")}</div>
+    <p class="note">Percentile against ${POSITIONS[p.pos]}s with ${MIN_PEER_MINS}+ minutes (the big number; 50 is average). The small number is the raw rate.${
+      p.mins < MIN_PEER_MINS ? " This player has fewer minutes than that, so treat these with care." : ""}${
+      p.us ? "" : " No Understat match, so shot-based stats are missing."}</p>`;
+}
+
+// ---------- shot map ----------
+
+const SHOT_RESULTS = { Goal: "Goal", SavedShot: "Saved", MissedShots: "Missed", BlockedShot: "Blocked", ShotOnPost: "Hit the post", OwnGoal: "Own goal" };
+const SITUATIONS = { OpenPlay: "Open play", FromCorner: "From a corner", SetPiece: "Set piece", DirectFreekick: "Direct free kick", Penalty: "Penalty" };
+
+function shotMap(container, shots) {
+  const W = 68, H = 53;
+  const pts = shots.map((s) => ({ ...s, cx: s.y * W, cy: Math.min(H - 1, Math.max(0.6, (1 - s.x) * 105)), r: 0.8 + Math.sqrt(s.xg) * 3.2 }))
+    .sort((a, b) => (a.result === "Goal") - (b.result === "Goal") || b.r - a.r);
+  container.innerHTML = `
+    <svg viewBox="-2 -3 ${W + 4} ${H + 4}" role="img" aria-label="Shot map">
+      <defs><linearGradient id="turf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2b0634"/><stop offset="1" stop-color="#160219"/></linearGradient></defs>
+      <rect class="turf" x="-2" y="-3" width="${W + 4}" height="${H + 4}" rx="2"></rect>
+      <g class="lines">
+        <rect x="0" y="0" width="${W}" height="52.5"></rect>
+        <rect x="13.84" y="0" width="40.32" height="16.5"></rect>
+        <rect x="24.84" y="0" width="18.32" height="5.5"></rect>
+        <rect x="30.34" y="-1.6" width="7.32" height="1.6"></rect>
+        <circle cx="34" cy="11" r="0.3" fill="rgba(4,245,255,0.5)"></circle>
+        <path d="M26.69 16.5A9.15 9.15 0 0 0 41.31 16.5"></path>
+        <path d="M24.85 52.5A9.15 9.15 0 0 1 43.15 52.5"></path>
+      </g>
+      <g>${pts.map((s, i) => `<circle class="shot ${s.result === "Goal" ? "goal" : "miss"}" data-i="${i}" cx="${s.cx.toFixed(2)}" cy="${s.cy.toFixed(2)}" r="${s.r.toFixed(2)}"></circle>`).join("")}</g>
+    </svg>
+    <div class="tooltip"></div>`;
+  const tt = container.querySelector(".tooltip");
+  container.querySelector("svg").addEventListener("mousemove", (e) => {
+    const i = e.target.dataset?.i;
+    if (i == null) { tt.style.display = "none"; return; }
+    const s = pts[i];
+    showTip(container, tt, `<b>${esc(SHOT_RESULTS[s.result] || s.result)}</b> · ${s.minute}'<br>
+      xG ${s.xg.toFixed(2)} · ${esc(SITUATIONS[s.situation] || s.situation || "")}<br>
+      <span class="muted">${s.home ? "vs" : "at"} ${esc(s.opp || "")} · ${esc(s.date)}</span>`, e);
+  });
+  container.querySelector("svg").addEventListener("mouseleave", () => { tt.style.display = "none"; });
+}
+
+function shotSummary(shots) {
+  const np = shots.filter((s) => s.situation !== "Penalty");
+  const goals = shots.filter((s) => s.result === "Goal").length;
+  const xg = shots.reduce((a, s) => a + s.xg, 0);
+  const onTarget = shots.filter((s) => s.result === "Goal" || s.result === "SavedShot").length;
+  return `<div class="kv">
+    <div><span>Shots</span><b>${shots.length}</b></div>
+    <div><span>Goals</span><b>${goals}</b></div>
+    <div><span>xG</span><b>${dec(xg, 2)}</b></div>
+    <div><span>npxG</span><b>${dec(np.reduce((a, s) => a + s.xg, 0), 2)}</b></div>
+    <div><span>On target</span><b>${onTarget}</b></div>
+    <div><span>xG per shot</span><b>${dec(shots.length ? xg / shots.length : null, 2)}</b></div>
+    <div><span>Big chances</span><b>${shots.filter((s) => s.xg >= 0.3).length}</b></div>
+    <div><span>Goals − xG</span><b class="${goals - xg >= 0 ? "up" : "down"}">${signed(goals - xg)}</b></div>
+  </div>`;
+}
+
+function keeperSummary(p) {
+  const prevented = p.xgc - p.gc;
+  return `<div class="kv">
+    <div><span>Saves</span><b>${p.saves}</b></div>
+    <div><span>Saves /90</span><b>${dec(per90(p.saves, p.mins), 2)}</b></div>
+    <div><span>Goals conceded</span><b>${p.gc}</b></div>
+    <div><span>xG conceded</span><b>${dec(p.xgc, 2)}</b></div>
+    <div><span>Goals prevented</span><b class="${prevented >= 0 ? "up" : "down"}">${signed(prevented)}</b></div>
+    <div><span>Clean sheets</span><b>${p.cs}</b></div>
+  </div>
+  <p class="note">Goals prevented is xG conceded minus goals conceded: positive means the keeper is saving more than expected (it includes the defence's xG, so it's a rough guide).</p>`;
+}
+
+// ---------- player page ----------
+
+async function renderPlayer(id) {
+  const p = playerById.get(id);
+  if (!p) return emptyState(`No player with id ${esc(id)}. <a href="#/players">Back to players</a>`);
+  const tile = (label, value, sub = "", accent = false) =>
+    `<div class="tile ${accent ? "accent" : ""}"><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+  const upcoming = (upcomingByTeam.get(p.team) || []).slice(0, 6);
+  const rankIn = (key) => 1 + D.players.filter((x) => x.pos === p.pos && x[key] > p[key]).length;
+  const posTiles = p.pos === 1
+    ? tile("Saves", p.saves, `${dec(per90(p.saves, p.mins), 1)} per 90`) + tile("Clean sheets", p.cs)
+    : p.pos === 2
+      ? tile("Def. contributions", p.defcon, `${dec(per90(p.defcon, p.mins), 1)} per 90`) + tile("Clean sheets", p.cs)
+      : tile("xG / xA", `${dec(p.xg, 1)} / ${dec(p.xa, 1)}`, p.us ? `${p.us.shots} shots · ${p.us.keyPasses} key passes` : "") + tile("ICT index", dec(p.ict, 1));
+
+  app.innerHTML = `
+    <a class="back" href="#/players">← All players</a>
+    <section class="hero">
+      <div class="hero-top">
+        <div>
+          <div class="eyebrow">${POSITION_NAMES[p.pos]} · ${esc(teamName(p.team))}</div>
+          <h1><small>${esc(p.first)}</small>${esc(p.last)}${statusFlag(p)}</h1>
+          <div class="meta">
+            <span class="chip">Selected by ${dec(p.own)}%</span>
+            <span class="chip">#${rankIn("points")} ${POSITIONS[p.pos]} by points</span>
+            ${p.us ? `<a class="chip" href="https://understat.com/player/${p.us.id}" target="_blank" rel="noopener">Understat ↗</a>` : ""}
+          </div>
+        </div>
+        <div class="price">
+          <div class="big">${money(p.price)}</div>
+          <div class="${p.changeStart > 0 ? "up" : p.changeStart < 0 ? "down" : "muted"}">${signed(p.changeStart)} this season</div>
+        </div>
+      </div>
+      ${p.news ? `<div class="news">⚠ ${esc(p.news)}</div>` : ""}
+      <div class="tiles">
+        ${tile("Total points", p.points, `${dec(p.ppg)} per game`, true)}
+        ${tile("Form", dec(p.form), "avg points, last 30 days")}
+        ${tile("Minutes", int(p.mins), `${p.starts} starts`)}
+        ${tile("Goals + assists", p.goals + p.assists, `${p.goals}G · ${p.assists}A`)}
+        ${posTiles}
+        ${tile("Bonus", p.bonus, `${p.bps} BPS`)}
+      </div>
+      <h2>Next fixtures</h2>
+      <div class="legend">${upcoming.length ? upcoming.map((fx) => `<span class="muted">GW${fx.gw}</span>${fdrChip(fx)}`).join("&nbsp;") : '<span class="muted">None scheduled</span>'}</div>
+    </section>
+
+    <div class="grid-2">
+      <section><h2>Percentile profile</h2><div class="panel pad">${percentilePanel(p)}</div></section>
+      <section><h2>${p.pos === 1 ? "Goalkeeping" : "Shot map"}</h2><div class="panel pad" id="shots-panel">
+        ${p.pos === 1 ? keeperSummary(p) : '<p class="muted">Loading shots…</p>'}</div></section>
+    </div>
+    <div id="history"><p class="muted">Loading gameweek history…</p></div>`;
+
+  let detail;
+  try { detail = await playerDetail(id); } catch {
+    document.getElementById("history").innerHTML = '<div class="empty">No gameweek history saved for this player yet.</div>';
+    if (p.pos !== 1) document.getElementById("shots-panel").innerHTML = '<p class="muted">No shot data saved.</p>';
+    return;
+  }
+  if (location.hash !== `#/player/${id}`) return; // navigated away while loading
+
+  if (p.pos !== 1) {
+    const panel = document.getElementById("shots-panel");
+    if (detail.shots.length) {
+      panel.innerHTML = `<div class="shotmap-wrap"><div><div class="pitch chart" id="pitch"></div>
+        <div class="shot-legend"><span><i style="background:var(--green)"></i>Goal</span><span><i style="border:1px solid #fff;background:rgba(255,255,255,.1)"></i>No goal</span><span>Bigger circle = higher xG</span></div></div>
+        <div>${shotSummary(detail.shots)}</div></div>`;
+      shotMap(document.getElementById("pitch"), detail.shots);
+    } else {
+      panel.innerHTML = `<div class="empty">${p.us ? "No shots yet this season." : "No Understat match for this player, so there's no shot data."}</div>`;
+    }
+  }
+
+  const history = detail.history;
+  const el = document.getElementById("history");
+  if (!history.length) { el.innerHTML = '<h2>Gameweek history</h2><div class="empty">No games played yet this season.</div>'; return; }
+
+  el.innerHTML = `
+    <div class="grid-2">
+      <section><h2>Points per gameweek</h2><div class="panel pad chart"><div id="points-chart"></div></div></section>
+      <section><h2>Price</h2><div class="panel pad chart"><div id="price-chart"></div></div></section>
+    </div>
+    <h2>Every game</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>GW</th><th class="left">Opponent</th><th>Result</th><th>Pts</th><th>Mins</th><th>G</th><th>A</th><th>xG</th><th>xA</th><th>CS</th>
+        ${p.pos === 1 ? "<th>Saves</th>" : "<th>Def. contr.</th>"}<th>Bonus</th><th>BPS</th><th>Price</th></tr></thead>
+      <tbody>${[...history].reverse().map((h) => `
+        <tr><td>${h.gw}</td><td class="left">${teamPill(h.opp)} <span class="muted">${h.home ? "H" : "A"}</span></td>
+          <td>${esc(h.score ?? "–")}</td><td class="hot">${h.points}</td><td>${h.mins}</td><td>${h.goals}</td><td>${h.assists}</td>
+          <td>${dec(h.xg, 2)}</td><td>${dec(h.xa, 2)}</td><td>${h.cs}</td><td>${p.pos === 1 ? h.saves ?? 0 : h.defcon ?? 0}</td>
+          <td>${h.bonus}</td><td>${h.bps ?? "–"}</td><td>${money(h.price)}</td></tr>`).join("")}
+      </tbody></table></div>`;
+
+  const tip = (h) => `<b>GW${h.gw}</b> ${h.home ? "vs" : "at"} ${esc(teamShort(h.opp))}<br>`;
+  barChart(document.getElementById("points-chart"), history, {
+    label: (h) => h.gw,
+    value: (h) => h.points,
+    dim: (h) => h.mins === 0,
+    tooltip: (h) => `${tip(h)}${h.points} pts · ${h.mins} mins`,
+  });
+  lineChart(document.getElementById("price-chart"), history, {
+    label: (h) => h.gw,
+    value: (h) => h.price,
+    tickFmt: (t) => t.toFixed(1),
+    pad: 0.1,
+    minStep: 0.1,
+    tooltip: (h) => `${tip(h)}${money(h.price)}`,
+  });
+}
+
+// ---------- my team ----------
+
+const planKey = () => `fplhub.plan.${D.myteam.id}.${D.myteam.gw}`;
+function loadPlan() {
+  try { return JSON.parse(localStorage.getItem(planKey())) || {}; } catch { return {}; }
+}
+function savePlan(plan) {
+  try { localStorage.setItem(planKey(), JSON.stringify(plan)); } catch { /* storage unavailable */ }
+}
+const teamView = { selected: null, q: "" };
+
+function renderMyTeam() {
+  const t = D.myteam;
+  if (!t) {
+    return emptyState(`<h2 style="justify-content:center">Add your FPL team</h2>
+      <p>Put your FPL team ID in <code>config.json</code> in the repo, for example <code>{"teamId": 1234567}</code>, and commit it.<br>
+      The next update loads your squad, points and rank. Find the ID in the address bar when you view your Points page on the FPL site.</p>
+      <p><a href="https://github.com/rfeasey1213/fpl-hub/edit/main/config.json" target="_blank" rel="noopener">Edit config.json on GitHub ↗</a></p>`);
+  }
+  if (!t.picks.length) return emptyState("Your team has no picks yet for this gameweek.");
+
+  const plan = loadPlan(); // slot -> new player id
+  const original = new Map(t.picks.map((pk) => [pk.slot, pk]));
+  const squad = t.picks.map((pk) => ({ slot: pk.slot, pick: pk, p: playerById.get(plan[pk.slot] ?? pk.id), changed: plan[pk.slot] != null }))
+    .filter((s) => s.p);
+  const bank = t.bank + Object.entries(plan).reduce((sum, [slot, inId]) =>
+    sum + (playerById.get(original.get(+slot).id)?.price ?? 0) - (playerById.get(inId)?.price ?? 0), 0);
+  const last = t.history[t.history.length - 1];
+  const prev = t.history[t.history.length - 2];
+  const rankMove = last && prev && last.overallRank && prev.overallRank ? prev.overallRank - last.overallRank : null;
+  const tile = (label, value, sub = "", accent = false) =>
+    `<div class="tile ${accent ? "accent" : ""}"><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+
+  const card = (s) => {
+    const p = s.p;
+    const next = (upcomingByTeam.get(p.team) || [])[0];
+    const real = !s.changed;
+    const pts = real ? s.pick.gwPoints * Math.max(1, s.pick.multiplier) : null;
+    return `<div class="card ${teamView.selected === s.slot ? "selected" : ""} ${s.changed ? "new" : ""}" data-slot="${s.slot}" title="${esc(p.full)}">
+      ${real && s.pick.captain ? `<span class="badge">${t.activeChip === "3xc" ? "3x" : "C"}</span>` : real && s.pick.vice ? '<span class="badge vice">V</span>' : ""}
+      ${statusFlag(p)}
+      ${shirt(p)}
+      <div class="nm">${esc(p.name)}</div>
+      <div class="sub">${next ? fdrChip(next, true) : '<span class="muted">–</span>'}</div>
+      <div class="pts">${real ? `${pts} pts` : `form ${dec(p.form)}`}</div>
+    </div>`;
+  };
+  const starters = squad.filter((s) => s.slot <= 11);
+  const bench = squad.filter((s) => s.slot > 11);
+  const rows = [1, 2, 3, 4].map((pos) => starters.filter((s) => s.p.pos === pos && s.pick.slot <= 11 && playerById.get(original.get(s.slot).id)?.pos === pos));
+
+  app.innerHTML = `
+    <section class="hero">
+      <div class="hero-top">
+        <div>
+          <div class="eyebrow">My team · Gameweek ${t.gw}${t.activeChip ? ` · ${esc(chipName(t.activeChip))} active` : ""}</div>
+          <h1>${esc(t.name)}</h1>
+          <div class="meta"><span class="chip">${esc(t.manager)}</span>
+            <a class="chip" href="https://fantasy.premierleague.com/entry/${t.id}/event/${t.gw}" target="_blank" rel="noopener">View on FPL ↗</a></div>
+        </div>
+        <div class="price">
+          <div class="muted">Overall rank</div>
+          <div class="big">${shortRank(t.overallRank)}</div>
+          ${rankMove != null ? `<div class="${rankMove >= 0 ? "up" : "down"}">${rankMove >= 0 ? "▲" : "▼"} ${Math.abs(rankMove).toLocaleString()} last GW</div>` : ""}
+        </div>
+      </div>
+      <div class="tiles">
+        ${tile(`GW${t.gw} points`, t.gwPoints, t.gwRank ? `rank ${shortRank(t.gwRank)}` : "", true)}
+        ${tile("Total points", int(t.overallPoints))}
+        ${tile("Team value", money(t.value))}
+        ${tile("In the bank", money(t.bank))}
+        ${tile("Points on bench", last?.bench ?? "–", "last gameweek")}
+        ${tile("Hits taken", `-${t.history.reduce((a, h) => a + h.hits, 0)}`, "points this season")}
+      </div>
+    </section>
+
+    <h2>Squad &amp; transfer planner</h2>
+    <div class="squad-layout">
+      <div class="squad-pitch">
+        <svg class="markings" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          <g fill="none" stroke="rgba(4,245,255,0.18)" stroke-width="0.4" vector-effect="non-scaling-stroke">
+            <rect x="3" y="2" width="94" height="96" rx="1"></rect><rect x="28" y="2" width="44" height="13"></rect>
+            <line x1="3" y1="60" x2="97" y2="60"></line></g></svg>
+        ${rows.map((r) => `<div class="squad-row">${r.map(card).join("")}</div>`).join("")}
+        <div class="bench"><div class="bench-label">Bench</div><div class="squad-row">${bench.map(card).join("")}</div></div>
+      </div>
+      <div class="panel pad plan-box" id="planner"></div>
+    </div>
+
+    <div class="grid-2">
+      <section><h2>Overall rank</h2><div class="panel pad chart"><div id="rank-chart"></div></div></section>
+      <section><h2>Points per gameweek</h2><div class="panel pad chart"><div id="gw-chart"></div></div></section>
+    </div>
+    <h2>Chips</h2>
+    <div class="legend">${["wildcard", "freehit", "bboost", "3xc"].map((c) => {
+      const used = t.chips.filter((x) => x.name === c);
+      return `<span class="chip">${chipName(c)}: ${used.length ? `<span class="muted">used GW${used.map((u) => u.gw).join(", GW")}</span>` : '<span class="up">available</span>'}</span>`;
+    }).join("")}</div>`;
+
+  renderPlanner(squad, plan, bank, original);
+  app.querySelector(".squad-pitch").addEventListener("click", (e) => {
+    const c = e.target.closest(".card");
+    if (!c) return;
+    teamView.selected = teamView.selected === +c.dataset.slot ? null : +c.dataset.slot;
+    teamView.q = "";
+    renderMyTeam();
+    // On narrow screens the replacement list sits below the pitch.
+    if (teamView.selected && innerWidth < 900) document.getElementById("planner").scrollIntoView({ behavior: "smooth" });
+  });
+
+  const hist = t.history.filter((h) => h.overallRank);
+  if (hist.length) {
+    lineChart(document.getElementById("rank-chart"), hist, {
+      label: (h) => h.gw, value: (h) => h.overallRank, invert: true, tickFmt: shortRank,
+      tooltip: (h) => `<b>GW${h.gw}</b><br>Rank ${h.overallRank.toLocaleString()}`,
+    });
+  }
+  barChart(document.getElementById("gw-chart"), t.history, {
+    label: (h) => h.gw, value: (h) => h.points, dim: () => false,
+    tooltip: (h) => `<b>GW${h.gw}</b><br>${h.points} pts${h.hits ? ` (−${h.hits} hit)` : ""} · bench ${h.bench}`,
+  });
+}
+
+function chipName(c) {
+  return { wildcard: "Wildcard", freehit: "Free Hit", bboost: "Bench Boost", "3xc": "Triple Captain", manager: "Assistant Manager" }[c] || c;
+}
+
+function renderPlanner(squad, plan, bank, original) {
+  const box = document.getElementById("planner");
+  const changes = Object.entries(plan).map(([slot, inId]) => ({ slot: +slot, out: playerById.get(original.get(+slot).id), in: playerById.get(inId) }));
+  const fdrSum = (players) => players.reduce((sum, p) => sum + (upcomingByTeam.get(p.team) || []).slice(0, 5).reduce((a, fx) => a + fx.fdr, 0), 0) / players.length;
+  const before = fdrSum(squad.map((s) => playerById.get(original.get(s.slot).id)).filter(Boolean));
+  const after = fdrSum(squad.map((s) => s.p));
+  const selected = squad.find((s) => s.slot === teamView.selected);
+
+  let picker = '<p class="muted">Click a player on the pitch to find a replacement. Plans are saved in this browser only and never change your real team.</p>';
+  if (selected) {
+    const out = selected.p;
+    const budget = bank + out.price;
+    const inSquad = new Set(squad.map((s) => s.p.id));
+    const perTeam = new Map();
+    squad.forEach((s) => { if (s.slot !== selected.slot) perTeam.set(s.p.team, (perTeam.get(s.p.team) || 0) + 1); });
+    const origId = original.get(selected.slot).id;
+    const q = teamView.q.trim().toLowerCase();
+    const options = D.players.filter((p) => p.pos === out.pos && (p.id === origId || !inSquad.has(p.id)) && p.id !== out.id &&
+      p.price <= budget + 1e-9 && (perTeam.get(p.team) || 0) < 3 && (!q || p.name.toLowerCase().includes(q) || p.full.toLowerCase().includes(q)))
+      .sort((a, b) => b.form - a.form || b.points - a.points).slice(0, 60);
+    picker = `
+      <div><h3>Replace ${esc(out.name)} <span class="muted">(${money(out.price)})</span></h3>
+        <div class="filters" style="margin:0 0 10px"><input type="search" id="cand-q" placeholder="Search ${POSITIONS[out.pos]}s up to ${money(budget)}"></div>
+        <div class="table-wrap candidates"><table>
+          <thead><tr><th>Player</th><th class="left">Team</th><th>Price</th><th>Form</th><th>Pts</th><th class="left">Next 3</th></tr></thead>
+          <tbody>${options.map((p) => `<tr class="clickable" data-pick="${p.id}">
+            <td class="name left">${esc(p.name)}${statusFlag(p)}</td><td class="left">${teamPill(p.team)}</td><td>${money(p.price)}</td>
+            <td class="hot">${dec(p.form)}</td><td>${p.points}</td>
+            <td class="left">${(upcomingByTeam.get(p.team) || []).slice(0, 3).map((fx) => fdrChip(fx, true)).join("")}</td></tr>`).join("") ||
+            '<tr><td colspan="6" class="muted left">No one fits the budget and the 3-per-club rule.</td></tr>'}</tbody>
+        </table></div></div>`;
+  }
+
+  box.innerHTML = `
+    <div class="kv">
+      <div><span>Planned transfers</span><b>${changes.length}</b></div>
+      <div><span>Bank after</span><b class="${bank < 0 ? "down" : ""}">${money(bank)}</b></div>
+      <div><span>Fixture difficulty, next 5</span><b>${dec(after, 1)}</b></div>
+      <div><span>Change</span><b class="${after < before ? "up" : after > before ? "down" : ""}">${after === before ? "0.0" : signed(after - before)}</b></div>
+    </div>
+    ${changes.length ? `<div class="plan-list">${changes.map((c) => `
+      <div class="plan-item"><span class="out">− ${esc(c.out?.name)}</span><button data-undo="${c.slot}" title="Undo">✕</button><span class="in">+ ${esc(c.in?.name)}</span></div>`).join("")}
+      <button id="reset-plan">Reset to my real team</button></div>` : ""}
+    ${picker}
+    <p class="note">Budget uses current prices; your real selling price can be up to £0.1m lower per player you've made a profit on. Fixture difficulty is the squad's average total FPL rating over the next 5 gameweeks (lower is easier).</p>`;
+
+  box.querySelector("#cand-q")?.addEventListener("input", (e) => {
+    teamView.q = e.target.value;
+    const pos = e.target.selectionStart;
+    renderMyTeam();
+    const again = document.getElementById("cand-q");
+    again.focus(); again.setSelectionRange(pos, pos);
+  });
+  const qEl = box.querySelector("#cand-q");
+  if (qEl) qEl.value = teamView.q;
+  box.addEventListener("click", (e) => {
+    const pick = e.target.closest("tr[data-pick]");
+    if (pick && selected) {
+      const id = +pick.dataset.pick;
+      if (id === original.get(selected.slot).id) delete plan[selected.slot];
+      else plan[selected.slot] = id;
+      savePlan(plan);
+      teamView.selected = null;
+      return renderMyTeam();
+    }
+    const undo = e.target.closest("[data-undo]");
+    if (undo) { delete plan[+undo.dataset.undo]; savePlan(plan); return renderMyTeam(); }
+    if (e.target.id === "reset-plan") { savePlan({}); teamView.selected = null; renderMyTeam(); }
+  });
 }
 
 // ---------- fixtures ----------
@@ -191,36 +694,45 @@ function renderFixtures() {
     : (a.avg ?? 9) - (b.avg ?? 9) || a.team.name.localeCompare(b.team.name));
 
   app.innerHTML = `
+    <div class="eyebrow">From gameweek ${start}</div>
     <h1>Fixture difficulty</h1>
-    <p class="secondary">The next gameweeks for every team, using FPL's own difficulty ratings. Two fixtures in a cell is a double gameweek; a dash is a blank.</p>
+    <p class="lede">Every team's upcoming run, rated by FPL. Two fixtures in a cell is a double gameweek; a dash is a blank.</p>
     <div class="filters">
-      <label>Gameweeks<select id="f-horizon">${[3, 5, 6, 8].map((n) =>
-        `<option value="${n}" ${n === fixtureView.horizon ? "selected" : ""}>${n}</option>`).join("")}</select></label>
-      <label>Sort<select id="f-sort">
-        <option value="easiest" ${fixtureView.sort === "easiest" ? "selected" : ""}>Easiest run first</option>
-        <option value="name" ${fixtureView.sort === "name" ? "selected" : ""}>Team name</option>
-      </select></label>
-      <div class="legend">Difficulty:
-        ${[1, 2, 3, 4, 5].map((n) => `<span class="fdr fdr-${n}">${n}${n === 1 ? " easiest" : n === 5 ? " hardest" : ""}</span>`).join("")}
+      <div class="segmented" id="horizon">${[3, 5, 6, 8].map((n) =>
+        `<button data-n="${n}" class="${n === fixtureView.horizon ? "on" : ""}">${n} GWs</button>`).join("")}</div>
+      <div class="segmented" id="fsort">
+        <button data-s="easiest" class="${fixtureView.sort === "easiest" ? "on" : ""}">Easiest first</button>
+        <button data-s="name" class="${fixtureView.sort === "name" ? "on" : ""}">A–Z</button>
+      </div>
+      <div class="legend" style="margin-left:auto">Difficulty
+        ${[1, 2, 3, 4, 5].map((n) => `<span class="fdr fdr-${n}">${n}${n === 1 ? " easy" : n === 5 ? " hard" : ""}</span>`).join("")}
       </div>
     </div>
     <div class="table-wrap"><table class="fixture-grid">
       <thead><tr><th class="left">Team</th>${gws.map((g) => `<th style="text-align:center">GW${g}</th>`).join("")}<th>Avg</th></tr></thead>
       <tbody>${rows.map((r) => `
-        <tr><td>${esc(r.team.name)}</td>
+        <tr><td>${teamPill(r.team.id)} ${esc(r.team.name)}</td>
           ${gws.map((g) => {
             const list = r.byGw.get(g);
-            return `<td>${list.length ? list.map(fdrChip).join("") : '<span class="fdr-blank">–</span>'}</td>`;
+            return `<td>${list.length ? list.map((fx) => fdrChip(fx)).join("") : '<span class="fdr-blank">–</span>'}</td>`;
           }).join("")}
           <td class="avg">${dec(r.avg, 2)}</td></tr>`).join("")}
       </tbody>
     </table></div>`;
 
-  document.getElementById("f-horizon").addEventListener("change", (e) => { fixtureView.horizon = +e.target.value; renderFixtures(); });
-  document.getElementById("f-sort").addEventListener("change", (e) => { fixtureView.sort = e.target.value; renderFixtures(); });
+  document.getElementById("horizon").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    fixtureView.horizon = +b.dataset.n; renderFixtures();
+  });
+  document.getElementById("fsort").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    fixtureView.sort = b.dataset.s; renderFixtures();
+  });
 }
 
 // ---------- prices ----------
+
+const priceView = { showAll: {} };
 
 function priceChanges() {
   const { dates, prices } = D.prices;
@@ -239,9 +751,9 @@ function priceTable(rows, valueLabel, value) {
     <thead><tr><th>Player</th><th class="left">Team</th><th class="left">Pos</th><th>Price</th><th>${valueLabel}</th></tr></thead>
     <tbody>${rows.map((r) => `
       <tr class="clickable" data-id="${r.p.id}">
-        <td class="name">${esc(r.p.name)}${statusFlag(r.p)}</td>
-        <td class="left">${esc(teamShort(r.p.team))}</td>
-        <td class="left">${POSITIONS[r.p.pos]}</td>
+        <td class="name left">${esc(r.p.name)}${statusFlag(r.p)}</td>
+        <td class="left">${teamPill(r.p.team)}</td>
+        <td class="left">${posTag(r.p.pos)}</td>
         <td>${money(r.p.price)}</td>
         <td>${value(r)}</td>
       </tr>`).join("")}</tbody></table></div>`;
@@ -255,14 +767,13 @@ function renderPrices() {
     heading = `Since ${new Date(daily.since).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
   } else {
     changes = D.players.filter((p) => p.changeGw).map((p) => ({ p, delta: p.changeGw }));
-    heading = `This gameweek (daily tracking starts after the second update)`;
+    heading = "This gameweek (daily tracking starts after the second update)";
   }
   const delta = (r) => `<span class="${r.delta > 0 ? "up" : "down"}">${r.delta > 0 ? "▲" : "▼"} ${signed(r.delta)}</span>`;
   const risers = changes.filter((c) => c.delta > 0).sort((a, b) => b.delta - a.delta || b.p.own - a.p.own);
   const fallers = changes.filter((c) => c.delta < 0).sort((a, b) => a.delta - b.delta || b.p.own - a.p.own);
   const net = D.players.map((p) => ({ p, net: p.transfersIn - p.transfersOut }));
   const fmtNet = (r) => `<span class="${r.net > 0 ? "up" : "down"}">${r.net > 0 ? "+" : ""}${r.net.toLocaleString()}</span>`;
-
   const LIMIT = 20;
   const changeSection = (title, rows, key) => {
     const all = priceView.showAll[key] || rows.length <= LIMIT;
@@ -271,18 +782,16 @@ function renderPrices() {
   };
 
   app.innerHTML = `
+    <div class="eyebrow">Market</div>
     <h1>Price changes</h1>
-    <p class="secondary">${esc(heading)}. Net transfers this gameweek are the best guide to the next moves.</p>
+    <p class="lede">${esc(heading)}. Net transfers this gameweek are the best guide to the next moves.</p>
     <div class="columns">
       ${changeSection("Risers", risers, "risers")}
       ${changeSection("Fallers", fallers, "fallers")}
       <section><h2>Most transferred in</h2>${priceTable([...net].sort((a, b) => b.net - a.net).slice(0, 15), "Net transfers", fmtNet)}</section>
       <section><h2>Most transferred out</h2>${priceTable([...net].sort((a, b) => a.net - b.net).slice(0, 15), "Net transfers", fmtNet)}</section>
     </div>`;
-  app.querySelectorAll("tbody").forEach((tb) => tb.addEventListener("click", (e) => {
-    const row = e.target.closest("tr[data-id]");
-    if (row) location.hash = `#/player/${row.dataset.id}`;
-  }));
+  app.querySelectorAll("tbody").forEach(onRowClick);
   app.querySelectorAll("[data-show]").forEach((a) => a.addEventListener("click", (e) => {
     e.preventDefault();
     priceView.showAll[a.dataset.show] = true;
@@ -290,77 +799,15 @@ function renderPrices() {
   }));
 }
 
-const priceView = { showAll: {} };
-
-// ---------- player page ----------
-
-async function renderPlayer(id) {
-  const p = playerById.get(id);
-  if (!p) return emptyState(`No player with id ${esc(id)}. <a href="#/players">Back to players</a>`);
-  const tile = (label, value) => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div></div>`;
-  const upcoming = (upcomingByTeam.get(p.team) || []).slice(0, 6);
-
-  app.innerHTML = `
-    <p><a href="#/players">← Players</a></p>
-    <h1>${esc(p.full)}${statusFlag(p)}</h1>
-    <div class="secondary">${esc(teamName(p.team))} · ${POSITIONS[p.pos]} · ${money(p.price)}
-      <span class="${p.changeStart > 0 ? "up" : p.changeStart < 0 ? "down" : ""}">(${signed(p.changeStart)} this season)</span></div>
-    ${p.news ? `<div class="news">${esc(p.news)}</div>` : ""}
-    <div class="tiles">
-      ${tile("Total points", p.points)}${tile("Form", dec(p.form))}${tile("Points per game", dec(p.ppg))}
-      ${tile("Selected by", `${dec(p.own)}%`)}${tile("Minutes", p.mins.toLocaleString())}
-      ${tile("Goals / assists", `${p.goals} / ${p.assists}`)}${tile("xG / xA", `${dec(p.xg, 1)} / ${dec(p.xa, 1)}`)}
-      ${tile("Bonus", p.bonus)}
-    </div>
-    <h2>Next fixtures</h2>
-    <div>${upcoming.length ? upcoming.map((fx) => `GW${fx.gw} ${fdrChip(fx)}`).join(" &nbsp; ") : '<span class="muted">None scheduled</span>'}</div>
-    <div id="history"><p class="muted">Loading gameweek history…</p></div>`;
-
-  let history;
-  try { history = await playerHistory(id); } catch {
-    document.getElementById("history").innerHTML = '<div class="empty">No gameweek history saved for this player yet.</div>';
-    return;
-  }
-  if (location.hash !== `#/player/${id}`) return; // navigated away while loading
-  const el = document.getElementById("history");
-  if (!history.length) { el.innerHTML = '<h2>Gameweek history</h2><div class="empty">No games played yet this season.</div>'; return; }
-
-  el.innerHTML = `
-    <h2>Gameweek history</h2>
-    <div class="charts">
-      <div class="chart"><h3>Points per gameweek</h3><div id="points-chart"></div></div>
-      <div class="chart"><h3>Price (£m)</h3><div id="price-chart"></div></div>
-    </div>
-    <h2>Every game</h2>
-    <div class="table-wrap"><table>
-      <thead><tr><th>GW</th><th class="left">Opponent</th><th>Result</th><th>Pts</th><th>Mins</th><th>G</th><th>A</th><th>xG</th><th>xA</th><th>CS</th><th>Bonus</th><th>Price</th></tr></thead>
-      <tbody>${[...history].reverse().map((h) => `
-        <tr><td>${h.gw}</td><td class="left">${esc(teamShort(h.opp))} (${h.home ? "H" : "A"})</td>
-          <td>${esc(h.score ?? "–")}</td><td><b>${h.points}</b></td><td>${h.mins}</td><td>${h.goals}</td><td>${h.assists}</td>
-          <td>${dec(h.xg, 2)}</td><td>${dec(h.xa, 2)}</td><td>${h.cs}</td><td>${h.bonus}</td><td>${money(h.price)}</td></tr>`).join("")}
-      </tbody></table></div>`;
-
-  const tip = (h) => `<b>GW${h.gw}</b> vs ${esc(teamShort(h.opp))} (${h.home ? "H" : "A"})<br>`;
-  barChart(document.getElementById("points-chart"), history, {
-    value: (h) => h.points,
-    dim: (h) => h.mins === 0,
-    tooltip: (h) => `${tip(h)}${h.points} pts · ${h.mins} mins`,
-  });
-  lineChart(document.getElementById("price-chart"), history, {
-    value: (h) => h.price,
-    tooltip: (h) => `${tip(h)}${money(h.price)}`,
-  });
-}
-
 // ---------- charts (inline SVG, one series each) ----------
 
-const CH = { w: 560, h: 200, l: 34, r: 8, t: 10, b: 24 };
+const CH = { w: 560, h: 210, l: 44, r: 10, t: 12, b: 24 };
 
-function niceTicks(min, max, count = 4) {
+function niceTicks(min, max, count = 4, minStep = 0) {
   const span = max - min || 1;
   const step0 = span / count;
   const mag = 10 ** Math.floor(Math.log10(step0));
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= step0);
+  const step = Math.max(minStep, [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= step0));
   const ticks = [];
   const top = Math.ceil(max / step - 1e-9) * step;
   for (let v = Math.floor(min / step) * step; v <= top + step * 1e-9; v += step) ticks.push(+v.toFixed(6));
@@ -368,17 +815,14 @@ function niceTicks(min, max, count = 4) {
 }
 
 function chartFrame(container, ticks, y, xLabels, fmtTick) {
-  const plotW = CH.w - CH.l - CH.r;
-  const grid = ticks.map((t) =>
-    `<line x1="${CH.l}" x2="${CH.w - CH.r}" y1="${y(t)}" y2="${y(t)}"></line>`).join("");
-  const labels = ticks.map((t) =>
-    `<text x="${CH.l - 6}" y="${y(t) + 4}" text-anchor="end">${fmtTick(t)}</text>`).join("");
+  const grid = ticks.map((t) => `<line x1="${CH.l}" x2="${CH.w - CH.r}" y1="${y(t)}" y2="${y(t)}"></line>`).join("");
+  const labels = ticks.map((t) => `<text x="${CH.l - 8}" y="${y(t) + 4}" text-anchor="end">${fmtTick(t)}</text>`).join("");
   const every = Math.ceil(xLabels.length / 12);
-  const xl = xLabels.map((lab, i) => i % every ? "" :
-    `<text x="${lab.x}" y="${CH.h - 6}" text-anchor="middle">${lab.text}</text>`).join("");
-  container.innerHTML = `<svg viewBox="0 0 ${CH.w} ${CH.h}" role="img"><g class="grid">${grid}</g>${labels}${xl}<g class="marks"></g></svg>
-    <div class="tooltip"></div>`;
-  return { svg: container.querySelector("svg"), marks: container.querySelector(".marks"), tooltip: container.querySelector(".tooltip"), plotW };
+  const xl = xLabels.map((lab, i) => (i % every ? "" : `<text x="${lab.x}" y="${CH.h - 6}" text-anchor="middle">${lab.text}</text>`)).join("");
+  container.innerHTML = `<svg viewBox="0 0 ${CH.w} ${CH.h}" role="img">
+    <defs><linearGradient id="area-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="rgba(4,245,255,0.28)"/><stop offset="1" stop-color="rgba(4,245,255,0)"/></linearGradient></defs>
+    <g class="grid">${grid}</g>${labels}${xl}<g class="marks"></g></svg><div class="tooltip"></div>`;
+  return { svg: container.querySelector("svg"), marks: container.querySelector(".marks"), tooltip: container.querySelector(".tooltip") };
 }
 
 function showTip(container, tooltip, html, evt) {
@@ -388,25 +832,23 @@ function showTip(container, tooltip, html, evt) {
   const x = evt.clientX - box.left, yPos = evt.clientY - box.top;
   const w = tooltip.offsetWidth;
   tooltip.style.left = `${Math.min(Math.max(0, x - w / 2), box.width - w)}px`;
-  tooltip.style.top = `${Math.max(0, yPos - tooltip.offsetHeight - 12)}px`;
+  tooltip.style.top = `${Math.max(-10, yPos - tooltip.offsetHeight - 14)}px`;
 }
 
-function barChart(container, rows, { value, dim, tooltip }) {
+function barChart(container, rows, { label, value, dim, tooltip }) {
   const vals = rows.map(value);
   const ticks = niceTicks(Math.min(0, ...vals), Math.max(1, ...vals));
   const lo = ticks[0], hi = ticks[ticks.length - 1];
-  const y = (v) => CH.t + (hi - v) / (hi - lo) * (CH.h - CH.t - CH.b);
+  const y = (v) => CH.t + ((hi - v) / (hi - lo)) * (CH.h - CH.t - CH.b);
   const slot = (CH.w - CH.l - CH.r) / rows.length;
   const barW = Math.max(3, Math.min(22, slot - 2));
   const cx = (i) => CH.l + slot * i + slot / 2;
-  const { marks, tooltip: tt } = chartFrame(container, ticks, y,
-    rows.map((h, i) => ({ x: cx(i), text: h.gw })), (t) => t);
+  const { marks, tooltip: tt } = chartFrame(container, ticks, y, rows.map((h, i) => ({ x: cx(i), text: label(h) })), (t) => t);
 
   const r = Math.min(4, barW / 2);
   marks.innerHTML = rows.map((h, i) => {
     const v = vals[i], x0 = cx(i) - barW / 2, base = y(0), top = y(v);
-    const hgt = Math.abs(base - top);
-    const rr = Math.min(r, hgt);
+    const rr = Math.min(r, Math.abs(base - top));
     // Rounded at the data end, square on the baseline.
     const d = v >= 0
       ? `M${x0},${base}V${top + rr}Q${x0},${top} ${x0 + rr},${top}H${x0 + barW - rr}Q${x0 + barW},${top} ${x0 + barW},${top + rr}V${base}Z`
@@ -417,28 +859,29 @@ function barChart(container, rows, { value, dim, tooltip }) {
 
   marks.addEventListener("mousemove", (e) => {
     const i = e.target.dataset?.i;
-    if (i == null) return;
-    showTip(container, tt, tooltip(rows[i]), e);
+    if (i != null) showTip(container, tt, tooltip(rows[i]), e);
   });
   marks.addEventListener("mouseleave", () => { tt.style.display = "none"; });
 }
 
-function lineChart(container, rows, { value, tooltip }) {
+function lineChart(container, rows, { label, value, tooltip, tickFmt = (t) => t, pad = 0, minStep = 0, invert = false }) {
   const vals = rows.map(value);
-  const ticks = niceTicks(Math.min(...vals) - 0.1, Math.max(...vals) + 0.1);
+  const ticks = niceTicks(Math.min(...vals) - pad, Math.max(...vals) + pad, 4, minStep);
   const lo = ticks[0], hi = ticks[ticks.length - 1];
-  const y = (v) => CH.t + (hi - v) / (hi - lo) * (CH.h - CH.t - CH.b);
+  const plotH = CH.h - CH.t - CH.b;
+  const y = (v) => CH.t + (invert ? (v - lo) / (hi - lo) : (hi - v) / (hi - lo)) * plotH;
   const plotW = CH.w - CH.l - CH.r;
   const x = (i) => CH.l + (rows.length === 1 ? plotW / 2 : (plotW * i) / (rows.length - 1));
-  const { svg, marks, tooltip: tt } = chartFrame(container, ticks, y,
-    rows.map((h, i) => ({ x: x(i), text: h.gw })), (t) => t.toFixed(1));
+  const { svg, marks, tooltip: tt } = chartFrame(container, ticks, y, rows.map((h, i) => ({ x: x(i), text: label(h) })), tickFmt);
 
   const path = vals.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join("");
+  const floor = CH.t + plotH;
   marks.innerHTML = `
-    <line class="cross" x1="0" x2="0" y1="${CH.t}" y2="${CH.h - CH.b}" style="display:none"></line>
+    <path class="area" d="${path}L${x(vals.length - 1)},${floor}L${x(0)},${floor}Z"></path>
+    <line class="cross" x1="0" x2="0" y1="${CH.t}" y2="${floor}" style="display:none"></line>
     <path class="line" d="${path}"></path>
     ${vals.length <= 40 ? vals.map((v, i) => `<circle class="dot" cx="${x(i)}" cy="${y(v)}" r="4"></circle>`).join("") : ""}
-    <rect class="hit" x="${CH.l}" y="${CH.t}" width="${plotW}" height="${CH.h - CH.t - CH.b}"></rect>`;
+    <rect class="hit" x="${CH.l}" y="${CH.t}" width="${plotW}" height="${plotH}"></rect>`;
 
   const cross = marks.querySelector(".cross");
   const hit = marks.querySelector(".hit");
@@ -464,6 +907,7 @@ function route() {
   window.scrollTo(0, 0);
   if (page === "fixtures") renderFixtures();
   else if (page === "prices") renderPrices();
+  else if (page === "myteam") renderMyTeam();
   else if (page === "player") renderPlayer(+arg);
   else renderPlayers();
 }
@@ -473,12 +917,11 @@ function route() {
     await loadData();
   } catch (err) {
     console.error(err);
-    return emptyState(`No data yet. In the GitHub repo, open <b>Actions → Update data and deploy → Run workflow</b> to fetch it.`);
+    return emptyState("No data yet. In the GitHub repo, open <b>Actions → Update data and deploy → Run workflow</b> to fetch it.");
   }
   const updated = new Date(D.meta.updated);
   document.getElementById("updated").textContent =
-    `Updated ${updated.toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` +
-    (D.meta.currentGw ? ` · GW${D.meta.currentGw}` : "");
+    `Live data · ${updated.toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`;
   window.addEventListener("hashchange", route);
   route();
 })();
