@@ -14,6 +14,7 @@ Uses only the standard library, so it runs on a bare GitHub Actions runner.
 """
 import concurrent.futures
 import datetime
+import gzip
 import json
 import os
 import sys
@@ -34,8 +35,14 @@ def fetch_json(url, headers=None, tries=4):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
             with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.load(resp)
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                body = resp.read()
+                if resp.headers.get("Content-Encoding") == "gzip" or body[:2] == b"\x1f\x8b":
+                    body = gzip.decompress(body)
+            try:
+                return json.loads(body)
+            except json.JSONDecodeError as err:
+                raise ValueError(f"{url} returned non-JSON ({resp.headers.get('Content-Type')}): {body[:160]!r}") from err
+        except (urllib.error.URLError, TimeoutError, ValueError):
             if attempt == tries - 1:
                 raise
             time.sleep(2 ** attempt)

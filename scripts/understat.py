@@ -9,6 +9,7 @@ import unicodedata
 
 BASE = os.environ.get("UNDERSTAT_BASE", "https://understat.com")
 HEADERS = {
+    "Accept-Encoding": "gzip",
     "X-Requested-With": "XMLHttpRequest",
     "Referer": f"{BASE}/",
     "Accept": "application/json, text/javascript, */*; q=0.01",
