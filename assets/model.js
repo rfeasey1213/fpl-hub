@@ -9,7 +9,7 @@ const Model = (() => {
   const DEFCON_THRESHOLD = { 2: 10, 3: 12, 4: 12 };
   const HOME_ATTACK = 1.08, AWAY_ATTACK = 0.92;
   const PRIOR_GAMES = 3;      // shrink team rates toward the league average early in the season
-  const PRIOR_MINUTES = 450;  // shrink player per-90 rates toward their position's average
+  const PRIOR_MINUTES = 180;  // shrink player per-90 rates toward their position's average (two games' worth)
 
   let teams = new Map(), league = 1.3, posAvg = {}, upcoming = new Map(), cache = new Map();
 

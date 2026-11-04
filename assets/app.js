@@ -1265,7 +1265,7 @@ function assistantAdvice(t, squad, bank, captainId) {
   const bb = [...weeks].sort((a, b) => b.bench - a.bench)[0];
   const fh = [...weeks].sort((a, b) => a.playing - b.playing || a.total - b.total)[0];
   const flagged = players.filter((p) => proj.get(p.id).av.fit < 0.75);
-  const bigGains = transfers.filter((x) => x.gain >= 2).length;
+  const bigGains = transfers.filter((x) => x.gain >= 3).length;
   const halfEnds = from <= 19 ? 19 : 38;
   const urgent = halfEnds - from <= 3;
 
@@ -1287,7 +1287,7 @@ function assistantAdvice(t, squad, bank, captainId) {
   if (avail.wildcard) {
     const go = flagged.length >= 3 || bigGains >= 4;
     chips.push({ name: "Wildcard", verdict: go ? "Consider now" : "Hold",
-      reason: go ? `${flagged.length} players are injured or doubtful and ${bigGains} transfers each gain 2+ points over 5 gameweeks.`
+      reason: go ? `${flagged.length} ${flagged.length === 1 ? "player is" : "players are"} injured or doubtful and ${bigGains} transfers each gain 3+ points over 5 gameweeks.`
         : "Your squad only needs a transfer or two; keep the Wildcard for a bigger rebuild." });
   }
   return { from, best, cap, vice, currentCap, currentPts, bestPts, keeperSwap, outfield, transfers, chips, weeks, avail, halfEnds, H };
