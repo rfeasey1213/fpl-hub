@@ -26,6 +26,13 @@ jobs:
         with:
           python-version: "3.12"
       - run: python scripts/fetch_data.py
+      - name: Claude advice (only when the ANTHROPIC_API_KEY secret is set)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then echo "No ANTHROPIC_API_KEY secret; skipping."; exit 0; fi
+          pip install --quiet anthropic
+          python scripts/ai_advice.py || echo "::warning::Claude advice failed; the rest of the update continues."
       - name: Commit data
         run: |
           git config user.name "github-actions[bot]"

@@ -4,7 +4,7 @@
 
 const POSITIONS = { 1: "GKP", 2: "DEF", 3: "MID", 4: "FWD" };
 const POSITION_NAMES = { 1: "Goalkeeper", 2: "Defender", 3: "Midfielder", 4: "Forward" };
-const D = { meta: null, teams: [], players: [], fixtures: [], prices: { dates: [], prices: {} }, myteam: null };
+const D = { meta: null, teams: [], players: [], fixtures: [], prices: { dates: [], prices: {} }, myteam: null, advice: null };
 const teamById = new Map();
 const playerById = new Map();
 const historyCache = new Map();
@@ -21,14 +21,16 @@ async function loadData() {
   const [meta, teams, players, fixtures] = await Promise.all(
     ["meta", "teams", "players", "fixtures"].map((n) => getJson(`data/${n}.json`))
   );
-  const [prices, myteam] = await Promise.all([
+  const [prices, myteam, advice] = await Promise.all([
     optionalJson("data/prices.json", D.prices),
     optionalJson("data/myteam.json", null),
+    optionalJson("data/advice.json", null),
   ]);
-  Object.assign(D, { meta, teams, players, fixtures, prices, myteam });
+  Object.assign(D, { meta, teams, players, fixtures, prices, myteam, advice });
   teams.forEach((t) => teamById.set(t.id, t));
   players.forEach((p) => playerById.set(p.id, p));
   upcomingByTeam = buildUpcoming();
+  Model.init(D, upcomingByTeam);
 }
 
 function firstUpcomingGw() {
@@ -594,6 +596,12 @@ function renderMyTeam() {
       <div class="panel pad plan-box" id="planner"></div>
     </div>
 
+    <h2>Assistant</h2>
+    <p class="lede" style="margin-bottom:12px">Suggestions from this site's projection model (the same one behind the Moneyball page), based on your squad including any planned transfers.</p>
+    <div id="assistant"></div>
+    <h2>Claude's take</h2>
+    ${claudeHtml()}
+
     <div class="grid-2">
       <section><h2>Overall rank</h2><div class="panel pad chart"><div id="rank-chart"></div></div></section>
       <section><h2>Your points vs the average</h2><div class="panel pad chart"><div id="gw-chart"></div></div></section>
@@ -611,6 +619,17 @@ function renderMyTeam() {
     }).join("")}</div>`;
 
   renderPlanner(squad, plan, bank, original);
+  const assistant = document.getElementById("assistant");
+  assistant.innerHTML = assistantHtml(assistantAdvice(t, squad, bank, t.picks.find((pk) => pk.captain)?.id));
+  assistant.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-suggest]");
+    if (!b) return;
+    const [slot, id] = b.dataset.suggest.split(":").map(Number);
+    plan[slot] = id;
+    savePlan(plan);
+    renderMyTeam();
+    document.getElementById("planner").scrollIntoView({ behavior: "smooth" });
+  });
   app.querySelector(".squad-pitch").addEventListener("click", (e) => {
     const c = e.target.closest(".card");
     if (!c) return;
@@ -988,6 +1007,350 @@ function renderStats() {
   bindSeg("scatter-y", "y"); bindSeg("board", "board"); bindSeg("board-pos", "boardPos");
 }
 
+// ---------- moneyball ----------
+
+const HORIZON = 5;
+const BUDGET_CUTOFF = { 1: 5.0, 2: 5.0, 3: 6.5, 4: 7.0 };
+const moneyballView = { pos: "", maxPrice: "", sort: "surplus", asc: false };
+
+// Least-squares line y = a + b·x.
+function fitLine(pts) {
+  const n = pts.length;
+  if (n < 3) return null;
+  const mx = pts.reduce((s, p) => s + p.x, 0) / n, my = pts.reduce((s, p) => s + p.y, 0) / n;
+  const sxx = pts.reduce((s, p) => s + (p.x - mx) ** 2, 0);
+  if (!sxx) return null;
+  const b = pts.reduce((s, p) => s + (p.x - mx) * (p.y - my), 0) / sxx;
+  return { a: my - b * mx, b };
+}
+
+// Every regular's projected points over the next HORIZON gameweeks, and how far above
+// their position's price line they sit (the "surplus" a Moneyball manager is buying).
+function valueTable() {
+  const from = firstUpcomingGw();
+  const rows = D.players.map((p) => {
+    const proj = Model.project(p, from, HORIZON);
+    return { p, xpts: proj.total, nextGw: proj.byGw[0]?.pts ?? 0, av: proj.av, due: p.xgi - (p.goals + p.assists) };
+  }).filter((r) => r.p.mins >= 270 && r.av.mins >= 45);
+  const lines = {};
+  for (const pos of [1, 2, 3, 4]) {
+    lines[pos] = fitLine(rows.filter((r) => r.p.pos === pos).map((r) => ({ x: r.p.price, y: r.xpts })));
+  }
+  for (const r of rows) {
+    const line = lines[r.p.pos];
+    r.expected = line ? line.a + line.b * r.p.price : r.xpts;
+    r.surplus = r.xpts - r.expected;
+    r.perM = r.xpts / r.p.price;
+  }
+  return { rows, lines, from };
+}
+
+const MB_COLS = {
+  price: { label: "Price", get: (r) => r.p.price, fmt: money },
+  xpts: { label: `xPts next ${HORIZON}`, get: (r) => r.xpts, fmt: (v) => dec(v, 1) },
+  surplus: { label: "Value over price", get: (r) => r.surplus, fmt: (v) => `<span class="${v >= 0 ? "up" : "down"}">${signed(v)}</span>` },
+  perM: { label: "xPts per £m", get: (r) => r.perM, fmt: (v) => dec(v, 2) },
+  ptsPerM: { label: "Season pts/£m", get: (r) => r.p.points / r.p.price, fmt: (v) => dec(v, 1) },
+  mins: { label: "Exp. mins", get: (r) => r.av.mins, fmt: (v) => Math.round(v) },
+  due: { label: "xGI − G+A", get: (r) => r.due, fmt: (v) => `<span class="${v > 0.5 ? "up" : v < -0.5 ? "down" : ""}">${signed(v)}</span>` },
+  own: { label: "Own %", get: (r) => r.p.own, fmt: (v) => dec(v) },
+};
+
+// A best-value XI from budget players: best of every legal formation, max three per club.
+function moneyballXI(beasts) {
+  const pool = [...beasts].sort((a, b) => b.xpts - a.xpts);
+  let best = null;
+  for (let nd = 3; nd <= 5; nd++) for (let nm = 2; nm <= 5; nm++) {
+    const nf = 10 - nd - nm;
+    if (nf < 1 || nf > 3) continue;
+    const need = { 1: 1, 2: nd, 3: nm, 4: nf }, club = new Map(), xi = [];
+    for (const r of pool) {
+      if (!need[r.p.pos] || (club.get(r.p.team) || 0) >= 3) continue;
+      need[r.p.pos]--; club.set(r.p.team, (club.get(r.p.team) || 0) + 1); xi.push(r);
+    }
+    if (xi.length < 11) continue;
+    const total = xi.reduce((a, r) => a + r.xpts, 0);
+    if (!best || total > best.total) best = { xi, total, formation: `${nd}-${nm}-${nf}`, cost: xi.reduce((a, r) => a + r.p.price, 0) };
+  }
+  return best;
+}
+
+function mbCard(r) {
+  const next = (upcomingByTeam.get(r.p.team) || [])[0];
+  return `<div class="card" data-id="${r.p.id}" title="${esc(r.p.full)}">
+    ${statusFlag(r.p)}${photo(r.p, "card-photo")}
+    <div class="nm">${esc(r.p.name)}</div>
+    <div class="sub">${money(r.p.price)} ${next ? fdrChip(next, true) : ""}</div>
+    <div class="pts">${dec(r.xpts, 1)} xPts</div>
+  </div>`;
+}
+
+function renderMoneyball() {
+  const { rows, lines, from } = valueTable();
+  const beasts = rows.filter((r) => r.p.price <= BUDGET_CUTOFF[r.p.pos]);
+  const xi = moneyballXI(beasts);
+  const overpriced = rows.filter((r) => r.p.own >= 5 && r.p.price > BUDGET_CUTOFF[r.p.pos]).sort((a, b) => a.surplus - b.surplus).slice(0, 8);
+
+  app.innerHTML = `
+    <section class="hero">
+      <div class="eyebrow">Moneyball · gameweeks ${from}–${from + HORIZON - 1}</div>
+      <h1>Budget beasts</h1>
+      <p class="lede">Prices follow reputation; points follow minutes, chances and fixtures. This page projects every regular's points for the next ${HORIZON} gameweeks
+        from their underlying numbers (expected minutes, xG and xA per 90, clean-sheet odds from both teams' xG, defensive contributions, saves, bonus)
+        adjusted for each opponent, then finds the players producing far more than their price says they should.</p>
+      ${xi ? `<div class="tiles">
+        ${tile("Moneyball XI cost", money(xi.cost), `${xi.formation}, all budget players`, true)}
+        ${tile(`Projected, next ${HORIZON} GWs`, dec(xi.total, 0), `${dec(xi.total / HORIZON, 1)} per gameweek`)}
+        ${tile("Budget beasts", beasts.filter((r) => r.surplus > 0).length, "beat their price line")}
+      </div>` : ""}
+    </section>
+
+    ${xi ? `<h2>Moneyball XI</h2>
+    <div class="squad-pitch mb-pitch">${[1, 2, 3, 4].map((pos) =>
+      `<div class="squad-row">${xi.xi.filter((r) => r.p.pos === pos).map(mbCard).join("")}</div>`).join("")}</div>
+    <p class="note">The highest-projected starting XI you can build only from players at or under ${Object.entries(BUDGET_CUTOFF).map(([pos, c]) => `${money(c)} (${POSITIONS[pos]})`).join(", ")}.</p>` : ""}
+
+    <h2>The price line</h2>
+    <p class="lede" style="margin-bottom:12px">Each dot is a player; the line is what a player of that price usually returns. Dots above the line are underpriced. Labelled: the biggest budget bargains.</p>
+    <div class="multiples wide">${[1, 2, 3, 4].map((pos) =>
+      `<div class="panel pad chart"><h3>${POSITION_NAMES[pos]}s</h3><div id="line-${pos}"></div></div>`).join("")}</div>
+
+    <h2>Budget beasts</h2>
+    <div class="filters">
+      ${segmented("mb-pos", { "": "All", 1: "GKP", 2: "DEF", 3: "MID", 4: "FWD" }, moneyballView.pos)}
+      <label>Max price (£m)<input type="number" id="mb-price" min="3.5" max="15" step="0.5" placeholder="budget only"></label>
+      <span class="count" id="mb-count"></span>
+    </div>
+    <div class="table-wrap"><table><thead id="mb-head"></thead><tbody id="mb-rows"></tbody></table></div>
+    <p class="note">Value over price = projected points minus what the price line expects at that price. xGI − G+A above zero means they've been unlucky: the chances are there and returns tend to follow.
+      Without a max price, the table shows players at or under the budget cut-offs.</p>
+
+    <h2>Overpriced: the other side of the trade</h2>
+    <p class="lede" style="margin-bottom:12px">Popular players whose projection sits furthest below their price line: the money tied up here could buy more points elsewhere.</p>
+    <div class="panel pad"><div id="overpriced"></div></div>`;
+
+  for (const pos of [1, 2, 3, 4]) {
+    const posRows = rows.filter((r) => r.p.pos === pos);
+    if (!posRows.length) continue;
+    const pts = posRows.map((r) => ({ x: r.p.price, y: r.xpts, label: esc(r.p.name), data: r }));
+    const labelled = new Set(pts.filter((d) => d.data.p.price <= BUDGET_CUTOFF[pos]).sort((a, b) => b.data.surplus - a.data.surplus).slice(0, 4));
+    Charts.scatter(document.getElementById(`line-${pos}`), pts, {
+      h: 280, w: 420, trend: lines[pos], highlight: labelled, yMin: 0, xFmt: (v) => `£${v}`, yFmt: (v) => v,
+      xTitle: "Price (£m)", yTitle: `xPts next ${HORIZON}`,
+      onClick: (d) => { location.hash = `#/player/${d.data.p.id}`; },
+      tooltip: (d) => `<b>${esc(d.data.p.name)}</b> · ${esc(teamShort(d.data.p.team))} · ${money(d.x)}<br>${dec(d.y, 1)} xPts · ${signed(d.data.surplus)} vs the line`,
+    });
+  }
+
+  Charts.hbars(document.getElementById("overpriced"), overpriced.map((r) => ({
+    label: `<span class="who">${photo(r.p, "sm")}${esc(r.p.name)}</span>`,
+    sub: `${teamShort(r.p.team)} · ${POSITIONS[r.p.pos]} · ${money(r.p.price)} · ${dec(r.p.own)}% owned`,
+    value: -r.surplus, id: r.p.id })), {
+    fmt: (v) => `−${dec(v, 1)}`, color: "linear-gradient(90deg, rgba(233,0,82,0.4), var(--pink))",
+    onClick: (r) => { location.hash = `#/player/${r.id}`; },
+  });
+
+  const fill = () => {
+    const v = moneyballView;
+    const col = MB_COLS[v.sort];
+    const list = rows.filter((r) => (!v.pos || r.p.pos === +v.pos) && (v.maxPrice ? r.p.price <= +v.maxPrice : r.p.price <= BUDGET_CUTOFF[r.p.pos]))
+      .sort((a, b) => (v.asc ? 1 : -1) * (col.get(a) - col.get(b)));
+    const th = (k, c) => `<th class="sortable ${v.sort === k ? `sorted ${v.asc ? "asc" : ""}` : ""}" data-key="${k}">${c.label}</th>`;
+    document.getElementById("mb-head").innerHTML = `<tr><th class="rank">#</th><th class="left">Player</th><th class="left">Team</th><th class="left">Pos</th>${
+      Object.entries(MB_COLS).map(([k, c]) => th(k, c)).join("")}<th class="left">Next 3</th></tr>`;
+    document.getElementById("mb-count").textContent = `${list.length} players`;
+    document.getElementById("mb-rows").innerHTML = list.slice(0, 60).map((r, i) => `
+      <tr class="clickable" data-id="${r.p.id}"><td class="rank">${i + 1}</td>
+        <td class="name left"><span class="who">${photo(r.p, "sm")}${esc(r.p.name)}${statusFlag(r.p)}</span></td>
+        <td class="left">${teamPill(r.p.team)}</td><td class="left">${posTag(r.p.pos)}</td>
+        ${Object.entries(MB_COLS).map(([k, c]) => `<td class="${k === v.sort ? "hot" : ""}">${c.fmt(c.get(r))}</td>`).join("")}
+        <td class="left">${(upcomingByTeam.get(r.p.team) || []).slice(0, 3).map((fx) => fdrChip(fx, true)).join("")}</td></tr>`).join("");
+  };
+  fill();
+  document.getElementById("mb-head").addEventListener("click", (e) => {
+    const th = e.target.closest("th.sortable"); if (!th) return;
+    if (moneyballView.sort === th.dataset.key) moneyballView.asc = !moneyballView.asc;
+    else { moneyballView.sort = th.dataset.key; moneyballView.asc = false; }
+    fill();
+  });
+  document.getElementById("mb-pos").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    moneyballView.pos = b.dataset.k;
+    document.querySelectorAll("#mb-pos button").forEach((x) => x.classList.toggle("on", x === b));
+    fill();
+  });
+  const price = document.getElementById("mb-price");
+  price.value = moneyballView.maxPrice;
+  price.addEventListener("input", () => { moneyballView.maxPrice = price.value; fill(); });
+  onRowClick(document.getElementById("mb-rows"));
+  app.querySelector(".mb-pitch")?.addEventListener("click", (e) => {
+    const c = e.target.closest(".card"); if (c) location.hash = `#/player/${c.dataset.id}`;
+  });
+}
+
+// ---------- assistant ----------
+
+const CHIP_HORIZON = 8;
+
+// From 2025/26 each chip can be played once in each half of the season (GW1–19, GW20–38).
+function chipStatus(t, gw) {
+  const firstHalf = gw <= 19;
+  const inHalf = (g) => (firstHalf ? g <= 19 : g >= 20);
+  return Object.fromEntries(["wildcard", "freehit", "bboost", "3xc"].map((name) =>
+    [name, !t.chips.some((c) => c.name === name && inHalf(c.gw))]));
+}
+
+function assistantAdvice(t, squad, bank, captainId) {
+  const from = firstUpcomingGw();
+  const n = Math.max(1, Math.min(CHIP_HORIZON, 39 - from));
+  const players = squad.map((s) => s.p);
+  const proj = new Map(players.map((p) => [p.id, Model.project(p, from, n)]));
+  const ptsIn = (i) => (p) => proj.get(p.id).byGw[i]?.pts ?? 0;
+  const next = ptsIn(0);
+
+  // This gameweek: best XI and captain vs the current picks.
+  const best = Model.bestXI(players, next);
+  const currentXI = squad.filter((s) => s.slot <= 11).map((s) => s.p);
+  const [cap, vice] = [...best.xi].sort((a, b) => next(b) - next(a));
+  const currentCap = playerById.get(captainId);
+  const xiTotal = (xi, c) => xi.reduce((a, p) => a + next(p), 0) + (c ? next(c) : 0);
+  const currentPts = xiTotal(currentXI, currentXI.includes(currentCap) ? currentCap : null);
+  const bestPts = xiTotal(best.xi, cap);
+  const inBest = new Set(best.xi);
+  const toStart = best.xi.filter((p) => !currentXI.includes(p));
+  const toBench = currentXI.filter((p) => !inBest.has(p));
+  const keeperSwap = toStart.find((p) => p.pos === 1) && { in: toStart.find((p) => p.pos === 1), out: toBench.find((p) => p.pos === 1) };
+  const outfield = { start: toStart.filter((p) => p.pos !== 1), bench: toBench.filter((p) => p.pos !== 1) };
+
+  // Transfers over the next 5 gameweeks: best single replacement for each squad player.
+  const H = Math.min(5, n);
+  const total5 = (p) => Model.project(p, from, H).total;
+  const inSquad = new Set(players.map((p) => p.id));
+  const perTeam = new Map();
+  players.forEach((p) => perTeam.set(p.team, (perTeam.get(p.team) || 0) + 1));
+  const ideas = [];
+  for (const s of squad) {
+    const out = s.p, budget = bank + out.price, outPts = total5(out);
+    let bestIn = null, bestPts = outPts;
+    for (const c of D.players) {
+      if (c.pos !== out.pos || inSquad.has(c.id) || c.price > budget + 1e-9) continue;
+      if (c.team !== out.team && (perTeam.get(c.team) || 0) >= 3) continue;
+      const pts = total5(c);
+      if (pts > bestPts) { bestPts = pts; bestIn = c; }
+    }
+    if (bestIn) ideas.push({ slot: s.slot, out, in: bestIn, gain: bestPts - outPts, outPts, inPts: bestPts });
+  }
+  const usedIns = new Set();
+  const transfers = ideas.sort((a, b) => b.gain - a.gain).filter((t2) => !usedIns.has(t2.in.id) && usedIns.add(t2.in.id)).slice(0, 4);
+
+  // Chips: score every gameweek in the horizon.
+  const weeks = Array.from({ length: n }, (_, i) => {
+    const pts = ptsIn(i);
+    const xi = Model.bestXI(players, pts);
+    const top = [...players].sort((a, b) => pts(b) - pts(a))[0];
+    return {
+      gw: from + i,
+      bench: xi ? xi.bench.reduce((a, p) => a + pts(p), 0) : 0,
+      captain: top, captainPts: pts(top),
+      playing: players.filter((p) => (proj.get(p.id).byGw[i]?.fixtures ?? 0) > 0).length,
+      doubles: players.filter((p) => (proj.get(p.id).byGw[i]?.fixtures ?? 0) > 1).length,
+      total: xi ? xi.total : 0,
+    };
+  });
+  const median = (arr) => { const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)] ?? 0; };
+  const avail = chipStatus(t, from);
+  const doubleOf = (w, p) => (proj.get(p.id).byGw[w.gw - from]?.fixtures ?? 0) > 1;
+  const chips = [];
+  const tc = [...weeks].sort((a, b) => b.captainPts - a.captainPts)[0];
+  const bb = [...weeks].sort((a, b) => b.bench - a.bench)[0];
+  const fh = [...weeks].sort((a, b) => a.playing - b.playing || a.total - b.total)[0];
+  const flagged = players.filter((p) => proj.get(p.id).av.fit < 0.75);
+  const bigGains = transfers.filter((x) => x.gain >= 2).length;
+  const halfEnds = from <= 19 ? 19 : 38;
+  const urgent = halfEnds - from <= 3;
+
+  if (avail["3xc"]) {
+    const go = tc.captainPts >= 1.25 * median(weeks.map((w) => w.captainPts)) || doubleOf(tc, tc.captain);
+    chips.push({ name: "Triple Captain", verdict: go ? `GW${tc.gw}` : urgent ? `GW${tc.gw} (use it or lose it)` : "Hold",
+      reason: `Best week: GW${tc.gw}, ${esc(tc.captain.name)} projected ${dec(tc.captainPts, 1)}${doubleOf(tc, tc.captain) ? " across a double gameweek" : ""}.${go ? "" : " No week stands out yet."}` });
+  }
+  if (avail.bboost) {
+    const go = bb.bench >= 12 || weeks.find((w) => w.gw === bb.gw).doubles >= 3;
+    chips.push({ name: "Bench Boost", verdict: go ? `GW${bb.gw}` : urgent ? `GW${bb.gw} (use it or lose it)` : "Hold",
+      reason: `Your bench projects ${dec(bb.bench, 1)} points in GW${bb.gw}, its best week.${go ? "" : " Worth more once your bench has doubles or easier fixtures."}` });
+  }
+  if (avail.freehit) {
+    const go = fh.playing <= 8;
+    chips.push({ name: "Free Hit", verdict: go ? `GW${fh.gw}` : "Hold",
+      reason: go ? `Only ${fh.playing} of your 15 have a fixture in GW${fh.gw}.` : `Every week in the next ${n} has at least ${fh.playing} of your players with a fixture; save it for a blank gameweek.` });
+  }
+  if (avail.wildcard) {
+    const go = flagged.length >= 3 || bigGains >= 4;
+    chips.push({ name: "Wildcard", verdict: go ? "Consider now" : "Hold",
+      reason: go ? `${flagged.length} players are injured or doubtful and ${bigGains} transfers each gain 2+ points over 5 gameweeks.`
+        : "Your squad only needs a transfer or two; keep the Wildcard for a bigger rebuild." });
+  }
+  return { from, best, cap, vice, currentCap, currentPts, bestPts, keeperSwap, outfield, transfers, chips, weeks, avail, halfEnds, H };
+}
+
+function assistantHtml(a) {
+  const nm = (p) => `<a href="#/player/${p.id}">${esc(p.name)}</a>`;
+  const xp = (p) => dec(Model.project(p, a.from, 1).total, 1);
+  const capLine = a.currentCap && a.currentCap.id === a.cap.id
+    ? `Keep ${nm(a.cap)} as captain (${dec(Model.project(a.cap, a.from, 1).total, 1)} xPts). Vice: ${nm(a.vice)}.`
+    : `Captain ${nm(a.cap)} (${dec(Model.project(a.cap, a.from, 1).total, 1)} xPts)${a.currentCap ? ` instead of ${nm(a.currentCap)}` : ""}. Vice: ${nm(a.vice)}.`;
+  return `
+    <div class="assist-grid">
+      <div class="assist-card">
+        <h3>Gameweek ${a.from} lineup</h3>
+        <div class="kv"><div><span>Your XI, projected</span><b>${dec(a.currentPts, 1)}</b></div>
+          <div><span>Best XI (${a.best.formation})</span><b class="${a.bestPts - a.currentPts > 0.5 ? "up" : ""}">${dec(a.bestPts, 1)}</b></div></div>
+        <ul class="advice">
+          <li>${capLine}</li>
+          ${a.keeperSwap ? `<li>Start ${nm(a.keeperSwap.in)} in goal (${xp(a.keeperSwap.in)}) instead of ${nm(a.keeperSwap.out)} (${xp(a.keeperSwap.out)}).</li>` : ""}
+          ${a.outfield.start.length ? `<li>Start ${a.outfield.start.map((p) => `${nm(p)} (${xp(p)})`).join(", ")}; bench ${a.outfield.bench.map((p) => `${nm(p)} (${xp(p)})`).join(", ")}. Formation ${a.best.formation}.</li>` : ""}
+          ${!a.keeperSwap && !a.outfield.start.length ? "<li>Your starting XI is already the best the model can pick.</li>" : ""}
+          <li>Bench order: ${a.best.bench.map(nm).join(", ")}.</li>
+        </ul>
+      </div>
+      <div class="assist-card">
+        <h3>Transfer ideas · next ${a.H} gameweeks</h3>
+        ${a.transfers.length ? `<div class="plan-list">${a.transfers.map((x) => `
+          <div class="plan-item suggestion"><span class="out">− ${nm(x.out)}</span>
+            <button data-suggest="${x.slot}:${x.in.id}" title="Add to planner">+ plan</button>
+            <span class="in">+ ${nm(x.in)} <small>${money(x.in.price)}</small></span>
+            <span class="gain">${signed(x.gain)} xPts</span></div>`).join("")}</div>
+          <p class="note">A transfer that costs a −4 hit needs to gain more than 4.</p>`
+          : '<p class="muted">No affordable upgrade beats your current players over the next few gameweeks.</p>'}
+      </div>
+      <div class="assist-card">
+        <h3>Chips</h3>
+        ${a.chips.length ? `<ul class="advice chips">${a.chips.map((c) => `<li><b>${c.name}</b><span class="verdict ${c.verdict === "Hold" ? "" : "go"}">${c.verdict}</span><br><span class="secondary">${c.reason}</span></li>`).join("")}</ul>`
+          : '<p class="muted">You have no chips left for this half of the season.</p>'}
+        <p class="note">Each chip can be used once per half of the season; this half's chips expire after GW${a.halfEnds}.</p>
+      </div>
+    </div>`;
+}
+
+function claudeHtml() {
+  const a = D.advice;
+  if (!a || D.myteam && a.teamId !== D.myteam.id) {
+    return `<div class="empty">Claude-written advice is off. To turn it on, add an Anthropic API key as a repository secret named <code>ANTHROPIC_API_KEY</code>
+      (repo Settings → Secrets and variables → Actions). Each update then asks Claude to review your squad, which uses a small amount of API credit.</div>`;
+  }
+  const when = new Date(a.generated).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  return `<div class="panel pad claude">
+    <p class="claude-summary">${esc(a.summary)}</p>
+    <div class="assist-grid">
+      <div class="assist-card"><h3>Captain</h3><p><b>${esc(a.captain.player)}</b> · ${esc(a.captain.reason)}</p></div>
+      <div class="assist-card"><h3>Transfers</h3><ul class="advice">${a.transfers.map((x) => `<li><b>${esc(x.out)} → ${esc(x.in)}</b>: ${esc(x.reason)}</li>`).join("") || "<li>Hold this week.</li>"}</ul></div>
+      <div class="assist-card"><h3>Chips</h3><p><b>${esc(a.chip.recommendation)}</b> · ${esc(a.chip.reason)}</p></div>
+      ${a.watchlist?.length ? `<div class="assist-card"><h3>Watchlist</h3><ul class="advice">${a.watchlist.map((w) => `<li><b>${esc(w.player)}</b>: ${esc(w.reason)}</li>`).join("")}</ul></div>` : ""}
+    </div>
+    <p class="note">Written by Claude (${esc(a.model)}) from this site's data, ${when}. It's a second opinion: it may disagree with the model above, and it can be wrong.</p>
+  </div>`;
+}
+
 // ---------- routing ----------
 
 function route() {
@@ -999,6 +1362,7 @@ function route() {
   else if (page === "prices") renderPrices();
   else if (page === "myteam") renderMyTeam();
   else if (page === "stats") renderStats();
+  else if (page === "moneyball") renderMoneyball();
   else if (page === "player") renderPlayer(+arg);
   else renderPlayers();
 }

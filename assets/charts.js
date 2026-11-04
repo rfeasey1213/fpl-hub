@@ -117,7 +117,7 @@ const Charts = (() => {
   }
 
   // Scatter of points [{x, y, label, data}]; `highlight` points get a direct label.
-  function scatter(container, points, { xFmt = (v) => v, yFmt = (v) => v, xTitle, yTitle, tooltip, onClick, highlight = new Set(), color = "var(--cyan)", h = 300, w: W = 560, xMin, yMin }) {
+  function scatter(container, points, { xFmt = (v) => v, yFmt = (v) => v, xTitle, yTitle, tooltip, onClick, highlight = new Set(), color = "var(--cyan)", h = 300, w: W = 560, xMin, yMin, trend }) {
     const l = 44, r = 14, t = 18, b = 34;
     const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
     const yt = niceTicks(yMin ?? Math.min(...ys), Math.max(...ys), 4);
@@ -128,7 +128,10 @@ const Charts = (() => {
     const { marks, tooltip: tt } = frame(container, { W, h, l, r, t, b, ticks: yt, y, tickFmt: yFmt, xTitle, yTitle,
       xLabels: xt.map((v) => ({ x: x(v), text: xFmt(v) })) });
     const order = points.map((p, i) => i).sort((a, b) => highlight.has(points[a]) - highlight.has(points[b]));
-    marks.innerHTML = order.map((i) => {
+    // Optional trend line y = a + b·x, clipped to the plot.
+    const clipY = (v) => Math.max(ylo, Math.min(yhi, v));
+    const trendLine = trend ? `<line class="trend" x1="${x(xlo)}" y1="${y(clipY(trend.a + trend.b * xlo))}" x2="${x(xhi)}" y2="${y(clipY(trend.a + trend.b * xhi))}"></line>` : "";
+    marks.innerHTML = trendLine + order.map((i) => {
       const p = points[i], hl = highlight.has(p);
       return `<circle class="pt ${hl ? "hl" : ""}" data-i="${i}" cx="${x(p.x)}" cy="${y(p.y)}" r="${hl ? 5.5 : 4}" style="fill:${color}"></circle>`;
     }).join("") + placeLabels([...highlight].map((p) => ({ p, px: x(p.x), py: y(p.y) })), W - r).join("");
