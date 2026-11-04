@@ -137,9 +137,25 @@ def history_row(h):
         "bonus": h["bonus"],
         "bps": h.get("bps", 0),
         "defcon": h.get("defensive_contribution", 0),
+        "cbi": h.get("clearances_blocks_interceptions", 0),
+        "tackles": h.get("tackles", 0),
+        "recoveries": h.get("recoveries", 0),
+        "gc": h.get("goals_conceded", 0),
+        "ownGoals": h.get("own_goals", 0),
+        "pensSaved": h.get("penalties_saved", 0),
+        "pensMissed": h.get("penalties_missed", 0),
+        "yellow": h.get("yellow_cards", 0),
+        "red": h.get("red_cards", 0),
         "xg": num(h.get("expected_goals")),
         "xa": num(h.get("expected_assists")),
+        "xgi": num(h.get("expected_goal_involvements")),
         "xgc": num(h.get("expected_goals_conceded")),
+        "influence": num(h.get("influence")),
+        "creativity": num(h.get("creativity")),
+        "threat": num(h.get("threat")),
+        "ict": num(h.get("ict_index")),
+        "selected": h.get("selected", 0),
+        "transfers": h.get("transfers_balance", 0),
         "price": h["value"] / 10,
         "score": f'{h["team_h_score"]}-{h["team_a_score"]}' if h["team_h_score"] is not None else None,
     }
@@ -160,6 +176,30 @@ def update_prices(players, today):
         else:
             series.append(current.get(pid))
     write("prices.json", store)
+
+
+PHOTO_TEMPLATES = [
+    "https://resources.premierleague.com/premierleague25/photos/players/110x140/{code}.png",
+    "https://resources.premierleague.com/premierleague/photos/players/110x140/p{code}.png",
+    "https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png",
+]
+
+
+def find_photo_template(players):
+    """Return the first player-photo URL pattern that serves an image, or None.
+
+    The site links to these images on the Premier League's servers rather than copying them.
+    """
+    sample = max(players, key=lambda p: p["points"])["code"]
+    for template in PHOTO_TEMPLATES:
+        try:
+            req = urllib.request.Request(template.format(code=sample), method="HEAD", headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                if resp.status == 200 and resp.headers.get("Content-Type", "").startswith("image/"):
+                    return template
+        except (urllib.error.URLError, TimeoutError):
+            continue
+    return None
 
 
 def team_id_from_config():
@@ -226,7 +266,16 @@ def main():
     fixtures = get("fixtures/")
 
     players = [player_row(p) for p in boot["elements"]]
-    teams = [{"id": t["id"], "name": t["name"], "short": t["short_name"], "code": t["code"]} for t in boot["teams"]]
+    teams = [
+        {
+            "id": t["id"], "name": t["name"], "short": t["short_name"], "code": t["code"],
+            "strength": {
+                "attackHome": t.get("strength_attack_home"), "attackAway": t.get("strength_attack_away"),
+                "defenceHome": t.get("strength_defence_home"), "defenceAway": t.get("strength_defence_away"),
+            },
+        }
+        for t in boot["teams"]
+    ]
     events = boot["events"]
     current = next((e["id"] for e in events if e["is_current"]), None)
     upcoming = next((e["id"] for e in events if e["is_next"]), None)
@@ -239,6 +288,21 @@ def main():
         "nextGw": upcoming,
         "season": season,
         "deadlines": {e["id"]: e["deadline_time"] for e in events},
+        "photoUrl": find_photo_template(players),
+        "totalPlayers": boot.get("total_players"),
+        "events": [
+            {
+                "gw": e["id"],
+                "average": e.get("average_entry_score"),
+                "highest": e.get("highest_score"),
+                "mostCaptained": e.get("most_captained"),
+                "mostSelected": e.get("most_selected"),
+                "mostTransferredIn": e.get("most_transferred_in"),
+                "topPlayer": (e.get("top_element_info") or {}).get("id"),
+                "topPoints": (e.get("top_element_info") or {}).get("points"),
+            }
+            for e in events if e.get("finished") or e.get("is_current")
+        ],
     })
     write("teams.json", teams)
     write("players.json", players)

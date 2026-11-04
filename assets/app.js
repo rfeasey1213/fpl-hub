@@ -97,6 +97,16 @@ function onRowClick(root) {
   });
 }
 
+const tile = (label, value, sub = "", accent = false) =>
+  `<div class="tile ${accent ? "accent" : ""}"><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+
+// Player photos are linked from the Premier League's image server; the shirt shows if one is missing.
+function photo(p, size = "") {
+  const url = D.meta.photoUrl?.replace("{code}", p.code);
+  if (!url) return `<span class="photo ${size} fallback">${shirt(p)}</span>`;
+  return `<span class="photo ${size}"><img src="${url}" alt="" loading="lazy" onerror="this.parentNode.classList.add('fallback');this.remove()">${shirt(p)}</span>`;
+}
+
 // Primary kit colour per club, for the shirt icons on the My Team pitch.
 const KIT = {
   ARS: "#ef0107", AVL: "#670e36", BOU: "#da291c", BRE: "#e30613", BHA: "#0057b8", BUR: "#6c1d45", CHE: "#034694",
@@ -231,7 +241,7 @@ function fillPlayerRows() {
   document.getElementById("rows").innerHTML = rows.slice(0, 400).map((p, i) => `
     <tr class="clickable" data-id="${p.id}">
       <td class="rank">${i + 1}</td>
-      <td class="name left">${esc(p.name)}${statusFlag(p)}</td>
+      <td class="name left"><span class="who">${photo(p, "sm")}${esc(p.name)}${statusFlag(p)}</span></td>
       <td class="left">${teamPill(p.team)}</td>
       <td class="left">${posTag(p.pos)}</td>
       ${view.cols.map((k) => {
@@ -325,11 +335,60 @@ function keeperSummary(p) {
 
 // ---------- player page ----------
 
+const GOAL_POINTS = { 1: 10, 2: 6, 3: 5, 4: 4 };
+const CLEAN_SHEET_POINTS = { 1: 4, 2: 4, 3: 1, 4: 0 };
+const DEFCON_THRESHOLD = { 2: 10, 3: 12, 4: 12 };
+
+// Rebuilds a season's points from FPL's scoring rules; anything the rules don't explain lands in `other`.
+function pointsBreakdown(p, history) {
+  const s = { appearances: 0, goals: 0, assists: 0, cleanSheets: 0, saves: 0, defcon: 0, bonus: 0, deductions: 0 };
+  for (const h of history) {
+    if (!h.mins) continue;
+    s.appearances += h.mins >= 60 ? 2 : 1;
+    s.goals += h.goals * GOAL_POINTS[p.pos];
+    s.assists += h.assists * 3;
+    s.cleanSheets += h.cs * CLEAN_SHEET_POINTS[p.pos];
+    if (p.pos === 1) s.saves += Math.floor((h.saves ?? 0) / 3) + 5 * (h.pensSaved ?? 0);
+    else if ((h.defcon ?? 0) >= DEFCON_THRESHOLD[p.pos]) s.defcon += 2;
+    s.bonus += h.bonus;
+    s.deductions -= (p.pos <= 2 ? Math.floor((h.gc ?? 0) / 2) : 0) + (h.yellow ?? 0) + 3 * (h.red ?? 0) + 2 * (h.ownGoals ?? 0) + 2 * (h.pensMissed ?? 0);
+  }
+  const total = history.reduce((a, h) => a + h.points, 0);
+  const known = Object.values(s).reduce((a, v) => a + v, 0);
+  return { ...s, other: total - known, total };
+}
+
+function breakdownPanel(container, p, history) {
+  const b = pointsBreakdown(p, history);
+  const parts = [
+    { label: "Appearances", value: b.appearances, color: SERIES[0] },
+    { label: "Goals", value: b.goals, color: SERIES[1] },
+    { label: "Assists", value: b.assists, color: SERIES[2] },
+    { label: "Clean sheets", value: b.cleanSheets, color: SERIES[3] },
+    p.pos === 1 ? { label: "Saves", value: b.saves, color: SERIES[4] } : { label: "Def. contributions", value: b.defcon, color: SERIES[5] },
+    { label: "Bonus", value: b.bonus, color: SERIES[6] },
+  ];
+  Charts.stacked(container, parts, {});
+  container.insertAdjacentHTML("beforeend", `<p class="note">${b.total} points in total.${
+    b.deductions ? ` Deductions (cards, goals conceded, own goals, missed penalties): <span class="down">${b.deductions}</span>.` : ""}${
+    b.other ? ` ${b.other > 0 ? "+" : ""}${b.other} not explained by the standard scoring rules.` : ""}</p>`);
+}
+
+const TREND_METRICS = {
+  1: [["saves", "Saves"], ["xgc", "xG conceded"], ["bps", "BPS"], ["mins", "Minutes"]],
+  2: [["defcon", "Def. contributions"], ["xgi", "xGI"], ["bps", "BPS"], ["mins", "Minutes"]],
+  3: [["xgi", "xGI"], ["ict", "ICT index"], ["bps", "BPS"], ["mins", "Minutes"]],
+  4: [["xgi", "xGI"], ["ict", "ICT index"], ["bps", "BPS"], ["mins", "Minutes"]],
+};
+
+function cumulative(values) {
+  let run = 0;
+  return values.map((v) => +(run += v).toFixed(2));
+}
+
 async function renderPlayer(id) {
   const p = playerById.get(id);
   if (!p) return emptyState(`No player with id ${esc(id)}. <a href="#/players">Back to players</a>`);
-  const tile = (label, value, sub = "", accent = false) =>
-    `<div class="tile ${accent ? "accent" : ""}"><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
   const upcoming = (upcomingByTeam.get(p.team) || []).slice(0, 6);
   const rankIn = (key) => 1 + D.players.filter((x) => x.pos === p.pos && x[key] > p[key]).length;
   const posTiles = p.pos === 1
@@ -342,12 +401,16 @@ async function renderPlayer(id) {
     <a class="back" href="#/players">← All players</a>
     <section class="hero">
       <div class="hero-top">
-        <div>
-          <div class="eyebrow">${POSITION_NAMES[p.pos]} · ${esc(teamName(p.team))}</div>
-          <h1><small>${esc(p.first)}</small>${esc(p.last)}${statusFlag(p)}</h1>
-          <div class="meta">
-            <span class="chip">Selected by ${dec(p.own)}%</span>
-            <span class="chip">#${rankIn("points")} ${POSITIONS[p.pos]} by points</span>
+        <div class="hero-id">
+          ${photo(p, "xl")}
+          <div>
+            <div class="eyebrow">${POSITION_NAMES[p.pos]} · ${esc(teamName(p.team))}</div>
+            <h1><small>${esc(p.first)}</small>${esc(p.last)}${statusFlag(p)}</h1>
+            <div class="meta">
+              <span class="chip">Selected by ${dec(p.own)}%</span>
+              <span class="chip">#${rankIn("points")} ${POSITIONS[p.pos]} by points</span>
+              <span class="chip">#${rankIn("form")} ${POSITIONS[p.pos]} by form</span>
+            </div>
           </div>
         </div>
         <div class="price">
@@ -385,38 +448,64 @@ async function renderPlayer(id) {
   const history = detail.history;
   const el = document.getElementById("history");
   if (!history.length) { el.innerHTML = '<h2>Gameweek history</h2><div class="empty">No games played yet this season.</div>'; return; }
+  const trends = TREND_METRICS[p.pos];
+  const owned = D.meta.totalPlayers && history.some((h) => h.selected);
 
   el.innerHTML = `
+    <h2>Where the points come from</h2>
+    <div class="panel pad" id="breakdown"></div>
     <div class="grid-2">
       <section><h2>Points per gameweek</h2><div class="panel pad chart"><div id="points-chart"></div></div></section>
+      <section><h2>${p.pos === 1 ? "Goals conceded vs xG conceded" : "Goals vs xG"}, cumulative</h2><div class="panel pad chart"><div id="cum-chart"></div></div></section>
+    </div>
+    <h2>Gameweek trends</h2>
+    <div class="multiples wide">${trends.map(([key, label]) =>
+      `<div class="panel pad chart"><h3>${label}</h3><div id="trend-${key}"></div></div>`).join("")}</div>
+    <div class="grid-2">
       <section><h2>Price</h2><div class="panel pad chart"><div id="price-chart"></div></div></section>
+      ${owned ? '<section><h2>Ownership</h2><div class="panel pad chart"><div id="own-chart"></div></div></section>' : ""}
     </div>
     <h2>Every game</h2>
     <div class="table-wrap"><table>
       <thead><tr><th>GW</th><th class="left">Opponent</th><th>Result</th><th>Pts</th><th>Mins</th><th>G</th><th>A</th><th>xG</th><th>xA</th><th>CS</th>
-        ${p.pos === 1 ? "<th>Saves</th>" : "<th>Def. contr.</th>"}<th>Bonus</th><th>BPS</th><th>Price</th></tr></thead>
+        ${p.pos === 1 ? "<th>Saves</th>" : "<th>Def. contr.</th>"}<th>ICT</th><th>Bonus</th><th>BPS</th><th>Price</th></tr></thead>
       <tbody>${[...history].reverse().map((h) => `
         <tr><td>${h.gw}</td><td class="left">${teamPill(h.opp)} <span class="muted">${h.home ? "H" : "A"}</span></td>
           <td>${esc(h.score ?? "–")}</td><td class="hot">${h.points}</td><td>${h.mins}</td><td>${h.goals}</td><td>${h.assists}</td>
           <td>${dec(h.xg, 2)}</td><td>${dec(h.xa, 2)}</td><td>${h.cs}</td><td>${p.pos === 1 ? h.saves ?? 0 : h.defcon ?? 0}</td>
-          <td>${h.bonus}</td><td>${h.bps ?? "–"}</td><td>${money(h.price)}</td></tr>`).join("")}
+          <td>${dec(h.ict, 1)}</td><td>${h.bonus}</td><td>${h.bps ?? "–"}</td><td>${money(h.price)}</td></tr>`).join("")}
       </tbody></table></div>`;
 
   const tip = (h) => `<b>GW${h.gw}</b> ${h.home ? "vs" : "at"} ${esc(teamShort(h.opp))}<br>`;
-  barChart(document.getElementById("points-chart"), history, {
-    label: (h) => h.gw,
-    value: (h) => h.points,
-    dim: (h) => h.mins === 0,
+  const gws = history.map((h) => h.gw);
+  breakdownPanel(document.getElementById("breakdown"), p, history);
+  Charts.bars(document.getElementById("points-chart"), history, {
+    label: (h) => h.gw, value: (h) => h.points, dim: (h) => h.mins === 0,
     tooltip: (h) => `${tip(h)}${h.points} pts · ${h.mins} mins`,
   });
-  lineChart(document.getElementById("price-chart"), history, {
-    label: (h) => h.gw,
-    value: (h) => h.price,
-    tickFmt: (t) => t.toFixed(1),
-    pad: 0.1,
-    minStep: 0.1,
-    tooltip: (h) => `${tip(h)}${money(h.price)}`,
+  const [actualKey, expectedKey, actualName, expectedName] = p.pos === 1 ? ["gc", "xgc", "Conceded", "xG conceded"] : ["goals", "xg", "Goals", "xG"];
+  const actual = cumulative(history.map((h) => h[actualKey] ?? 0));
+  const expected = cumulative(history.map((h) => h[expectedKey] ?? 0));
+  Charts.lines(document.getElementById("cum-chart"), {
+    labels: gws, fromZero: true, tickFmt: (v) => (Number.isInteger(v) ? v : v.toFixed(1)),
+    series: [{ name: actualName, values: actual, color: SERIES[1] }, { name: expectedName, values: expected, color: SERIES[0] }],
+    tooltip: (i) => `${tip(history[i])}${actualName} ${actual[i]} · ${expectedName} ${expected[i].toFixed(2)}`,
   });
+  trends.forEach(([key, label]) => Charts.bars(document.getElementById(`trend-${key}`), history, {
+    label: (h) => h.gw, value: (h) => h[key] ?? 0, h: 190, w: 460, tickFmt: (v) => (Number.isInteger(v) ? v : v.toFixed(1)),
+    tooltip: (h) => `${tip(h)}${label}: ${Number.isInteger(h[key]) ? h[key] : dec(h[key], 2)}`,
+  }));
+  Charts.lines(document.getElementById("price-chart"), {
+    labels: gws, series: [{ name: "Price", values: history.map((h) => h.price) }], pad: 0.1, minStep: 0.1,
+    tickFmt: (v) => v.toFixed(1), tooltip: (i) => `${tip(history[i])}${money(history[i].price)}`,
+  });
+  if (owned) {
+    const pct = history.map((h) => (h.selected / D.meta.totalPlayers) * 100);
+    Charts.lines(document.getElementById("own-chart"), {
+      labels: gws, series: [{ name: "Ownership", values: pct }], tickFmt: (v) => `${dec(v, v < 10 ? 1 : 0)}%`,
+      tooltip: (i) => `${tip(history[i])}Owned by ${dec(pct[i])}% · net transfers ${history[i].transfers > 0 ? "+" : ""}${(history[i].transfers ?? 0).toLocaleString()}`,
+    });
+  }
 }
 
 // ---------- my team ----------
@@ -449,9 +538,6 @@ function renderMyTeam() {
   const last = t.history[t.history.length - 1];
   const prev = t.history[t.history.length - 2];
   const rankMove = last && prev && last.overallRank && prev.overallRank ? prev.overallRank - last.overallRank : null;
-  const tile = (label, value, sub = "", accent = false) =>
-    `<div class="tile ${accent ? "accent" : ""}"><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
-
   const card = (s) => {
     const p = s.p;
     const next = (upcomingByTeam.get(p.team) || [])[0];
@@ -460,7 +546,7 @@ function renderMyTeam() {
     return `<div class="card ${teamView.selected === s.slot ? "selected" : ""} ${s.changed ? "new" : ""}" data-slot="${s.slot}" title="${esc(p.full)}">
       ${real && s.pick.captain ? `<span class="badge">${t.activeChip === "3xc" ? "3x" : "C"}</span>` : real && s.pick.vice ? '<span class="badge vice">V</span>' : ""}
       ${statusFlag(p)}
-      ${shirt(p)}
+      ${photo(p, "card-photo")}
       <div class="nm">${esc(p.name)}</div>
       <div class="sub">${next ? fdrChip(next, true) : '<span class="muted">–</span>'}</div>
       <div class="pts">${real ? `${pts} pts` : `form ${dec(p.form)}`}</div>
@@ -510,7 +596,13 @@ function renderMyTeam() {
 
     <div class="grid-2">
       <section><h2>Overall rank</h2><div class="panel pad chart"><div id="rank-chart"></div></div></section>
-      <section><h2>Points per gameweek</h2><div class="panel pad chart"><div id="gw-chart"></div></div></section>
+      <section><h2>Your points vs the average</h2><div class="panel pad chart"><div id="gw-chart"></div></div></section>
+    </div>
+    <div class="grid-2">
+      <section><h2>Season points by player</h2><div class="panel pad"><div id="squad-bars"></div></div></section>
+      <section><h2>Team value &amp; bench points</h2>
+        <div class="panel pad chart"><h3>Team value</h3><div id="value-chart"></div></div>
+        <div class="panel pad chart" style="margin-top:16px"><h3>Points left on the bench</h3><div id="bench-chart"></div></div></section>
     </div>
     <h2>Chips</h2>
     <div class="legend">${["wildcard", "freehit", "bboost", "3xc"].map((c) => {
@@ -531,14 +623,30 @@ function renderMyTeam() {
 
   const hist = t.history.filter((h) => h.overallRank);
   if (hist.length) {
-    lineChart(document.getElementById("rank-chart"), hist, {
-      label: (h) => h.gw, value: (h) => h.overallRank, invert: true, tickFmt: shortRank,
-      tooltip: (h) => `<b>GW${h.gw}</b><br>Rank ${h.overallRank.toLocaleString()}`,
+    Charts.lines(document.getElementById("rank-chart"), {
+      labels: hist.map((h) => h.gw), series: [{ name: "Rank", values: hist.map((h) => h.overallRank) }], invert: true, tickFmt: shortRank,
+      tooltip: (i) => `<b>GW${hist[i].gw}</b><br>Rank ${hist[i].overallRank.toLocaleString()}`,
     });
   }
-  barChart(document.getElementById("gw-chart"), t.history, {
-    label: (h) => h.gw, value: (h) => h.points, dim: () => false,
-    tooltip: (h) => `<b>GW${h.gw}</b><br>${h.points} pts${h.hits ? ` (−${h.hits} hit)` : ""} · bench ${h.bench}`,
+  const avgByGw = new Map((D.meta.events || []).map((e) => [e.gw, e.average]));
+  const mine = t.history.map((h) => h.points);
+  const avg = t.history.map((h) => avgByGw.get(h.gw) ?? null);
+  Charts.lines(document.getElementById("gw-chart"), {
+    labels: t.history.map((h) => h.gw), fromZero: true,
+    series: [{ name: "You", values: mine, color: SERIES[0] }, { name: "Average", values: avg, color: SERIES[1] }],
+    tooltip: (i) => { const h = t.history[i]; return `<b>GW${h.gw}</b><br>You ${h.points}${h.hits ? ` (−${h.hits} hit)` : ""} · average ${avg[i] ?? "–"}`; },
+  });
+  Charts.hbars(document.getElementById("squad-bars"),
+    squad.map((s) => s.p).sort((a, b) => b.points - a.points).map((p) => ({
+      label: `<span class="who">${photo(p, "sm")}${esc(p.name)}</span>`, sub: `${teamShort(p.team)} · ${POSITIONS[p.pos]}`, value: p.points, id: p.id })),
+    { onClick: (r) => { location.hash = `#/player/${r.id}`; } });
+  Charts.lines(document.getElementById("value-chart"), {
+    labels: t.history.map((h) => h.gw), series: [{ name: "Value", values: t.history.map((h) => h.value) }], h: 160, pad: 0.1, minStep: 0.1,
+    tickFmt: (v) => v.toFixed(1), tooltip: (i) => `<b>GW${t.history[i].gw}</b><br>Value ${money(t.history[i].value)} · bank ${money(t.history[i].bank)}`,
+  });
+  Charts.bars(document.getElementById("bench-chart"), t.history, {
+    label: (h) => h.gw, value: (h) => h.bench, h: 150, color: SERIES[1],
+    tooltip: (h) => `<b>GW${h.gw}</b><br>${h.bench} pts on the bench`,
   });
 }
 
@@ -740,103 +848,144 @@ function renderPrices() {
   }));
 }
 
-// ---------- charts (inline SVG, one series each) ----------
+// ---------- stats lab ----------
 
-const CH = { w: 560, h: 210, l: 44, r: 10, t: 12, b: 24 };
+const SCATTER_Y = {
+  points: { label: "Points", get: (p) => p.points, fmt: (v) => v },
+  xgi90: { label: "xGI per 90", get: (p) => per90(p.xgi, p.mins), fmt: (v) => dec(v, 2) },
+  form: { label: "Form", get: (p) => p.form, fmt: (v) => dec(v, 1) },
+  ppg: { label: "Points per game", get: (p) => p.ppg, fmt: (v) => dec(v, 1) },
+};
+const BOARDS = {
+  points: { label: "Points", get: (p) => p.points, fmt: (v) => v },
+  form: { label: "Form", get: (p) => p.form, fmt: (v) => dec(v) },
+  xgi: { label: "xGI", get: (p) => p.xgi, fmt: (v) => dec(v, 2) },
+  xgi90: { label: "xGI/90", get: (p) => (p.mins >= 270 ? per90(p.xgi, p.mins) : null), fmt: (v) => dec(v, 2) },
+  ptsPerM: { label: "Pts per £m", get: (p) => p.points / p.price, fmt: (v) => dec(v, 1) },
+  defcon: { label: "Def. contributions", get: (p) => p.defcon, fmt: (v) => v },
+  bps: { label: "BPS", get: (p) => p.bps, fmt: (v) => v },
+  threat: { label: "Threat", get: (p) => p.threat, fmt: (v) => dec(v, 0) },
+  creativity: { label: "Creativity", get: (p) => p.creativity, fmt: (v) => dec(v, 0) },
+  net: { label: "Net transfers", get: (p) => p.transfersIn - p.transfersOut, fmt: (v) => v.toLocaleString() },
+};
+const statsView = { y: "points", board: "form", boardPos: "" };
 
-function niceTicks(min, max, count = 4, minStep = 0) {
-  const span = max - min || 1;
-  const step0 = span / count;
-  const mag = 10 ** Math.floor(Math.log10(step0));
-  const step = Math.max(minStep, [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= step0));
-  const ticks = [];
-  const top = Math.ceil(max / step - 1e-9) * step;
-  for (let v = Math.floor(min / step) * step; v <= top + step * 1e-9; v += step) ticks.push(+v.toFixed(6));
-  return ticks;
+function teamStats() {
+  const rows = new Map(D.teams.map((t) => [t.id, { team: t, games: 0, gf: 0, ga: 0, xg: 0, xga: 0 }]));
+  for (const f of D.fixtures) {
+    if (!f.finished || f.homeScore == null) continue;
+    const h = rows.get(f.home), a = rows.get(f.away);
+    h.games++; a.games++;
+    h.gf += f.homeScore; h.ga += f.awayScore;
+    a.gf += f.awayScore; a.ga += f.homeScore;
+  }
+  for (const p of D.players) {
+    const r = rows.get(p.team);
+    r.xg += p.xg;
+    if (p.pos === 1) r.xga += p.xgc; // keepers' xG conceded adds up to the team's
+  }
+  return [...rows.values()].filter((r) => r.games);
 }
 
-function chartFrame(container, ticks, y, xLabels, fmtTick) {
-  const grid = ticks.map((t) => `<line x1="${CH.l}" x2="${CH.w - CH.r}" y1="${y(t)}" y2="${y(t)}"></line>`).join("");
-  const labels = ticks.map((t) => `<text x="${CH.l - 8}" y="${y(t) + 4}" text-anchor="end">${fmtTick(t)}</text>`).join("");
-  const every = Math.ceil(xLabels.length / 12);
-  const xl = xLabels.map((lab, i) => (i % every ? "" : `<text x="${lab.x}" y="${CH.h - 6}" text-anchor="middle">${lab.text}</text>`)).join("");
-  container.innerHTML = `<svg viewBox="0 0 ${CH.w} ${CH.h}" role="img">
-    <defs><linearGradient id="area-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="rgba(4,245,255,0.28)"/><stop offset="1" stop-color="rgba(4,245,255,0)"/></linearGradient></defs>
-    <g class="grid">${grid}</g>${labels}${xl}<g class="marks"></g></svg><div class="tooltip"></div>`;
-  return { svg: container.querySelector("svg"), marks: container.querySelector(".marks"), tooltip: container.querySelector(".tooltip") };
+function segmented(id, options, current) {
+  return `<div class="segmented" id="${id}">${Object.entries(options).map(([k, v]) =>
+    `<button data-k="${k}" class="${k === current ? "on" : ""}">${typeof v === "string" ? v : v.label}</button>`).join("")}</div>`;
 }
 
-function showTip(container, tooltip, html, evt) {
-  const box = container.getBoundingClientRect();
-  tooltip.innerHTML = html;
-  tooltip.style.display = "block";
-  const x = evt.clientX - box.left, yPos = evt.clientY - box.top;
-  const w = tooltip.offsetWidth;
-  tooltip.style.left = `${Math.min(Math.max(0, x - w / 2), box.width - w)}px`;
-  tooltip.style.top = `${Math.max(-10, yPos - tooltip.offsetHeight - 14)}px`;
-}
+function renderStats() {
+  const toPlayer = (pt) => { location.hash = `#/player/${pt.data.id}`; };
+  app.innerHTML = `
+    <div class="eyebrow">Gameweek ${D.meta.currentGw ?? "–"}</div>
+    <h1>Stats lab</h1>
+    <p class="lede">The whole league at a glance: who gives the most for the money, who's flying under the radar, which teams create and concede, and the leaders in every stat.</p>
 
-function barChart(container, rows, { label, value, dim, tooltip }) {
-  const vals = rows.map(value);
-  const ticks = niceTicks(Math.min(0, ...vals), Math.max(1, ...vals));
-  const lo = ticks[0], hi = ticks[ticks.length - 1];
-  const y = (v) => CH.t + ((hi - v) / (hi - lo)) * (CH.h - CH.t - CH.b);
-  const slot = (CH.w - CH.l - CH.r) / rows.length;
-  const barW = Math.max(3, Math.min(22, slot - 2));
-  const cx = (i) => CH.l + slot * i + slot / 2;
-  const { marks, tooltip: tt } = chartFrame(container, ticks, y, rows.map((h, i) => ({ x: cx(i), text: label(h) })), (t) => t);
+    <h2>Price vs output</h2>
+    <div class="filters">${segmented("scatter-y", SCATTER_Y, statsView.y)}<span class="count">Players with 270+ minutes · labelled: best value in each position</span></div>
+    <div class="multiples wide">${[1, 2, 3, 4].map((pos) =>
+      `<div class="panel pad chart"><h3>${POSITION_NAMES[pos]}s</h3><div id="sc-${pos}"></div></div>`).join("")}</div>
 
-  const r = Math.min(4, barW / 2);
-  marks.innerHTML = rows.map((h, i) => {
-    const v = vals[i], x0 = cx(i) - barW / 2, base = y(0), top = y(v);
-    const rr = Math.min(r, Math.abs(base - top));
-    // Rounded at the data end, square on the baseline.
-    const d = v >= 0
-      ? `M${x0},${base}V${top + rr}Q${x0},${top} ${x0 + rr},${top}H${x0 + barW - rr}Q${x0 + barW},${top} ${x0 + barW},${top + rr}V${base}Z`
-      : `M${x0},${base}V${top - rr}Q${x0},${top} ${x0 + rr},${top}H${x0 + barW - rr}Q${x0 + barW},${top} ${x0 + barW},${top - rr}V${base}Z`;
-    return `<path class="bar ${dim(h) ? "dim" : ""}" d="${d}"></path>
-      <rect class="hit" data-i="${i}" x="${CH.l + slot * i}" y="${CH.t}" width="${slot}" height="${CH.h - CH.t - CH.b}"></rect>`;
-  }).join("") + `<line class="axis-line" x1="${CH.l}" x2="${CH.w - CH.r}" y1="${y(0)}" y2="${y(0)}"></line>`;
+    <div class="grid-2">
+      <section><h2>Differentials: form vs ownership</h2><div class="panel pad chart"><div id="diff-chart"></div>
+        <p class="note">Labelled: the best form among players owned by under 10% of managers.</p></div></section>
+      <section><h2>Team attack vs defence</h2><div class="panel pad chart"><div id="team-chart"></div>
+        <p class="note">Per game. Bottom-right is best: lots of chances created, few conceded. xG for is the sum of the team's players; xG against is the sum of its keepers' xG conceded.</p></div></section>
+    </div>
 
-  marks.addEventListener("mousemove", (e) => {
-    const i = e.target.dataset?.i;
-    if (i != null) showTip(container, tt, tooltip(rows[i]), e);
+    <h2>Leaderboards</h2>
+    <div class="filters">${segmented("board", BOARDS, statsView.board)}
+      ${segmented("board-pos", { "": "All", 1: "GKP", 2: "DEF", 3: "MID", 4: "FWD" }, statsView.boardPos)}</div>
+    <div class="panel pad"><div id="board-bars"></div></div>
+
+    <div class="grid-2">
+      <section><h2>Gameweek scores across FPL</h2><div class="panel pad chart"><div id="league-chart"></div></div></section>
+      <section><h2>Gameweek stars</h2><div id="stars"></div></section>
+    </div>`;
+
+  const pts = (filter) => D.players.filter((p) => p.mins >= 270 && filter(p));
+
+  // Price vs output, one panel per position.
+  const ym = SCATTER_Y[statsView.y];
+  for (const pos of [1, 2, 3, 4]) {
+    const points = pts((p) => p.pos === pos && ym.get(p) != null)
+      .map((p) => ({ x: p.price, y: ym.get(p), label: esc(p.name), data: p }));
+    const best = new Set([...points].sort((a, b) => b.y / b.x - a.y / a.x).slice(0, 3));
+    if (points.length) Charts.scatter(document.getElementById(`sc-${pos}`), points, {
+      h: 280, w: 420, xFmt: (v) => `£${v}`, yFmt: ym.fmt, highlight: best, onClick: toPlayer, yMin: 0,
+      xTitle: "Price (£m)", yTitle: ym.label,
+      tooltip: (pt) => `<b>${esc(pt.data.name)}</b> · ${esc(teamShort(pt.data.team))}<br>${money(pt.x)} · ${ym.label} ${ym.fmt(pt.y)}`,
+    });
+  }
+
+  // Differentials.
+  const diff = pts(() => true).map((p) => ({ x: p.own, y: p.form, label: esc(p.name), data: p }));
+  Charts.scatter(document.getElementById("diff-chart"), diff, {
+    xFmt: (v) => `${v}%`, yFmt: (v) => v, xMin: 0, yMin: 0, xTitle: "Selected by", yTitle: "Form", onClick: toPlayer,
+    highlight: new Set(diff.filter((d) => d.x < 10).sort((a, b) => b.y - a.y).slice(0, 6)),
+    tooltip: (pt) => `<b>${esc(pt.data.name)}</b> · ${esc(teamShort(pt.data.team))} · ${money(pt.data.price)}<br>Form ${dec(pt.y)} · owned by ${dec(pt.x)}%`,
   });
-  marks.addEventListener("mouseleave", () => { tt.style.display = "none"; });
-}
 
-function lineChart(container, rows, { label, value, tooltip, tickFmt = (t) => t, pad = 0, minStep = 0, invert = false }) {
-  const vals = rows.map(value);
-  const ticks = niceTicks(Math.min(...vals) - pad, Math.max(...vals) + pad, 4, minStep);
-  const lo = ticks[0], hi = ticks[ticks.length - 1];
-  const plotH = CH.h - CH.t - CH.b;
-  const y = (v) => CH.t + (invert ? (v - lo) / (hi - lo) : (hi - v) / (hi - lo)) * plotH;
-  const plotW = CH.w - CH.l - CH.r;
-  const x = (i) => CH.l + (rows.length === 1 ? plotW / 2 : (plotW * i) / (rows.length - 1));
-  const { svg, marks, tooltip: tt } = chartFrame(container, ticks, y, rows.map((h, i) => ({ x: x(i), text: label(h) })), tickFmt);
-
-  const path = vals.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join("");
-  const floor = CH.t + plotH;
-  marks.innerHTML = `
-    <path class="area" d="${path}L${x(vals.length - 1)},${floor}L${x(0)},${floor}Z"></path>
-    <line class="cross" x1="0" x2="0" y1="${CH.t}" y2="${floor}" style="display:none"></line>
-    <path class="line" d="${path}"></path>
-    ${vals.length <= 40 ? vals.map((v, i) => `<circle class="dot" cx="${x(i)}" cy="${y(v)}" r="4"></circle>`).join("") : ""}
-    <rect class="hit" x="${CH.l}" y="${CH.t}" width="${plotW}" height="${plotH}"></rect>`;
-
-  const cross = marks.querySelector(".cross");
-  const hit = marks.querySelector(".hit");
-  hit.addEventListener("mousemove", (e) => {
-    const pt = svg.createSVGPoint();
-    pt.x = e.clientX; pt.y = e.clientY;
-    const local = pt.matrixTransform(svg.getScreenCTM().inverse());
-    const i = rows.length === 1 ? 0 : Math.round(((local.x - CH.l) / plotW) * (rows.length - 1));
-    const idx = Math.max(0, Math.min(rows.length - 1, i));
-    cross.setAttribute("x1", x(idx)); cross.setAttribute("x2", x(idx));
-    cross.style.display = "";
-    showTip(container, tt, tooltip(rows[idx]), e);
+  // Teams.
+  const teams = teamStats().map((r) => ({ x: r.xg / r.games, y: r.xga / r.games, label: esc(r.team.short), data: r }));
+  if (teams.length) Charts.scatter(document.getElementById("team-chart"), teams, {
+    xFmt: (v) => dec(v, 1), yFmt: (v) => dec(v, 1), xTitle: "xG for", yTitle: "xG against", highlight: new Set(teams),
+    tooltip: (pt) => `<b>${esc(pt.data.team.name)}</b><br>xG ${dec(pt.x, 2)} for · ${dec(pt.y, 2)} against per game<br>
+      Goals ${pt.data.gf}–${pt.data.ga} in ${pt.data.games} games`,
   });
-  hit.addEventListener("mouseleave", () => { cross.style.display = "none"; tt.style.display = "none"; });
+
+  // Leaderboard.
+  const bm = BOARDS[statsView.board];
+  const leaders = D.players.filter((p) => (!statsView.boardPos || p.pos === +statsView.boardPos) && bm.get(p) != null)
+    .sort((a, b) => bm.get(b) - bm.get(a)).slice(0, 12);
+  Charts.hbars(document.getElementById("board-bars"), leaders.map((p) => ({
+    label: `<span class="who">${photo(p, "sm")}${esc(p.name)}</span>`, sub: `${teamShort(p.team)} · ${POSITIONS[p.pos]} · ${money(p.price)}`,
+    value: Math.max(0, bm.get(p)), id: p.id })), { fmt: bm.fmt, onClick: (r) => { location.hash = `#/player/${r.id}`; } });
+
+  // League-wide gameweek scores and stars.
+  const events = (D.meta.events || []).filter((e) => e.average != null);
+  if (events.length) {
+    Charts.lines(document.getElementById("league-chart"), {
+      labels: events.map((e) => e.gw), fromZero: true,
+      series: [{ name: "Highest", values: events.map((e) => e.highest), color: SERIES[1] }, { name: "Average", values: events.map((e) => e.average), color: SERIES[0] }],
+      tooltip: (i) => `<b>GW${events[i].gw}</b><br>Average ${events[i].average} · highest ${events[i].highest}`,
+    });
+    const name = (id) => (playerById.get(id) ? `<span class="who">${photo(playerById.get(id), "sm")}${esc(playerById.get(id).name)}</span>` : "–");
+    document.getElementById("stars").innerHTML = `<div class="table-wrap"><table>
+      <thead><tr><th>GW</th><th class="left">Top scorer</th><th>Pts</th><th class="left">Most captained</th></tr></thead>
+      <tbody>${[...events].reverse().slice(0, 10).map((e) => `<tr class="clickable" data-id="${e.topPlayer ?? ""}">
+        <td>${e.gw}</td><td class="left name">${name(e.topPlayer)}</td><td class="hot">${e.topPoints ?? "–"}</td><td class="left">${name(e.mostCaptained)}</td></tr>`).join("")}
+      </tbody></table></div>`;
+    onRowClick(document.getElementById("stars"));
+  } else {
+    document.getElementById("league-chart").innerHTML = '<p class="muted">Available after the next data update.</p>';
+    document.getElementById("stars").innerHTML = '<div class="empty">Available after the next data update.</div>';
+  }
+
+  const bindSeg = (id, key) => document.getElementById(id).addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    statsView[key] = b.dataset.k;
+    const y = scrollY; renderStats(); scrollTo(0, y);
+  });
+  bindSeg("scatter-y", "y"); bindSeg("board", "board"); bindSeg("board-pos", "boardPos");
 }
 
 // ---------- routing ----------
@@ -849,6 +998,7 @@ function route() {
   if (page === "fixtures") renderFixtures();
   else if (page === "prices") renderPrices();
   else if (page === "myteam") renderMyTeam();
+  else if (page === "stats") renderStats();
   else if (page === "player") renderPlayer(+arg);
   else renderPlayers();
 }
