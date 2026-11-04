@@ -51,8 +51,7 @@ function buildUpcoming() {
 
 async function playerDetail(id) {
   if (!historyCache.has(id)) {
-    historyCache.set(id, getJson(`data/players/${id}.json`).then((d) =>
-      Array.isArray(d) ? { history: d, shots: [] } : d));
+    historyCache.set(id, getJson(`data/players/${id}.json`).then((d) => (Array.isArray(d) ? { history: d } : d)));
   }
   return historyCache.get(id);
 }
@@ -112,7 +111,6 @@ function shirt(p) {
 
 // ---------- players ----------
 
-const us = (k) => (p) => p.us?.[k] ?? null;
 const COLUMNS = {
   price: { label: "Price", get: (p) => p.price, fmt: money },
   points: { label: "Pts", get: (p) => p.points, hot: true },
@@ -125,13 +123,13 @@ const COLUMNS = {
   xg: { label: "xG", get: (p) => p.xg, fmt: (v) => dec(v, 2) },
   xa: { label: "xA", get: (p) => p.xa, fmt: (v) => dec(v, 2) },
   xgi: { label: "xGI", get: (p) => p.xgi, fmt: (v) => dec(v, 2) },
+  xg90: { label: "xG/90", get: (p) => per90(p.xg, p.mins), fmt: (v) => dec(v, 2) },
+  xa90: { label: "xA/90", get: (p) => per90(p.xa, p.mins), fmt: (v) => dec(v, 2) },
   xgi90: { label: "xGI/90", get: (p) => per90(p.xgi, p.mins), fmt: (v) => dec(v, 2) },
+  threat: { label: "Threat", get: (p) => p.threat, fmt: (v) => dec(v, 0) },
+  creativity: { label: "Creativity", get: (p) => p.creativity, fmt: (v) => dec(v, 0) },
+  ict: { label: "ICT", get: (p) => p.ict, fmt: (v) => dec(v, 1) },
   bonus: { label: "Bonus", get: (p) => p.bonus },
-  shots: { label: "Shots", get: us("shots") },
-  keyPasses: { label: "Key passes", get: us("keyPasses") },
-  npxg: { label: "npxG", get: us("npxg"), fmt: (v) => dec(v, 2) },
-  xgChain: { label: "xGChain", get: us("xgChain"), fmt: (v) => dec(v, 2) },
-  xgBuildup: { label: "xGBuildup", get: us("xgBuildup"), fmt: (v) => dec(v, 2) },
   cs: { label: "CS", get: (p) => p.cs },
   gc: { label: "GC", get: (p) => p.gc },
   xgc: { label: "xGC", get: (p) => p.xgc, fmt: (v) => dec(v, 2) },
@@ -146,7 +144,7 @@ const COLUMNS = {
 };
 const VIEWS = {
   overview: { label: "Overview", cols: ["price", "points", "form", "ppg", "own", "mins", "goals", "assists", "xgi", "bonus"], next: true, sort: "points" },
-  attack: { label: "Attack", cols: ["price", "points", "goals", "xg", "npxg", "shots", "assists", "xa", "keyPasses", "xgi90", "xgChain", "xgBuildup"], sort: "xgi90" },
+  attack: { label: "Attack", cols: ["price", "points", "goals", "xg", "xg90", "assists", "xa", "xa90", "xgi90", "threat", "creativity", "ict"], sort: "xgi90" },
   defence: { label: "Defence", cols: ["price", "points", "cs", "gc", "xgc", "defcon", "cbi", "tackles", "recoveries", "saves"], sort: "defcon" },
   value: { label: "Value", cols: ["price", "points", "ptsPerM", "ppg", "form", "formPerM", "xgi90", "own", "net"], next: true, sort: "ptsPerM" },
 };
@@ -160,7 +158,7 @@ function renderPlayers() {
   app.innerHTML = `
     <div class="eyebrow">Season ${D.meta.season ? `${D.meta.season}/${String(D.meta.season + 1).slice(2)}` : ""} · Gameweek ${D.meta.currentGw ?? "–"}</div>
     <h1>Player database</h1>
-    <p class="lede">Every Premier League player in FPL, with Understat shot data. Switch views for attacking, defensive and value stats; click a player for their full profile.</p>
+    <p class="lede">Every Premier League player in FPL. Switch views for attacking, defensive and value stats; click a player for their full profile.</p>
     <div class="filters">
       <div class="segmented" id="views">${Object.entries(VIEWS).map(([k, v]) =>
         `<button data-view="${k}" class="${k === playerView.view ? "on" : ""}">${v.label}</button>`).join("")}</div>
@@ -248,13 +246,11 @@ function fillPlayerRows() {
 
 const MIN_PEER_MINS = 450;
 const M = {
-  npxg90: { label: "npxG", get: (p) => per90(p.us?.npxg, p.us?.mins) },
+  xg90: { label: "xG", get: (p) => per90(p.xg, p.mins) },
   xa90: { label: "xA", get: (p) => per90(p.xa, p.mins) },
-  shots90: { label: "Shots", get: (p) => per90(p.us?.shots, p.us?.mins) },
-  kp90: { label: "Key passes", get: (p) => per90(p.us?.keyPasses, p.us?.mins) },
-  chain90: { label: "xGChain", get: (p) => per90(p.us?.xgChain, p.us?.mins) },
-  buildup90: { label: "xGBuildup", get: (p) => per90(p.us?.xgBuildup, p.us?.mins) },
-  xgPerShot: { label: "xG per shot", get: (p) => (p.us?.shots >= 5 ? p.us.xg / p.us.shots : null), plain: true },
+  threat90: { label: "Threat", get: (p) => per90(p.threat, p.mins) },
+  creativity90: { label: "Creativity", get: (p) => per90(p.creativity, p.mins) },
+  influence90: { label: "Influence", get: (p) => per90(p.influence, p.mins) },
   xgi90: { label: "xGI", get: (p) => per90(p.xgi, p.mins) },
   defcon90: { label: "Def. contributions", get: (p) => per90(p.defcon, p.mins) },
   cbi90: { label: "Clear/block/int", get: (p) => per90(p.cbi, p.mins) },
@@ -268,9 +264,9 @@ const M = {
 };
 const METRICS_BY_POS = {
   1: ["saves90", "xgc90", "cs90", "pts90", "bps90"],
-  2: ["xgi90", "defcon90", "cbi90", "tackles90", "rec90", "xgc90", "chain90", "pts90"],
-  3: ["npxg90", "xa90", "shots90", "kp90", "chain90", "buildup90", "defcon90", "pts90"],
-  4: ["npxg90", "xa90", "shots90", "kp90", "xgPerShot", "chain90", "pts90"],
+  2: ["xgi90", "defcon90", "cbi90", "tackles90", "rec90", "xgc90", "bps90", "pts90"],
+  3: ["xg90", "xa90", "threat90", "creativity90", "influence90", "defcon90", "bps90", "pts90"],
+  4: ["xg90", "xa90", "threat90", "creativity90", "influence90", "bps90", "pts90"],
 };
 
 function percentiles(p) {
@@ -292,67 +288,26 @@ function percentilePanel(p) {
   if (!rows.length) return '<div class="empty">Not enough minutes this season for comparisons.</div>';
   return `<div class="pct-list">${rows.map((r) => `
     <div class="pct-row ${r.pct < 35 ? "low" : ""}" title="${r.pct}th percentile among ${r.peers} ${POSITIONS[p.pos]}s">
-      <span class="lab">${r.label}${r.m.plain ? "" : '<span class="muted"> /90</span>'}</span>
+      <span class="lab">${r.label}<span class="muted"> /90</span></span>
       <div class="pct-track"><div class="pct-fill" style="width:${Math.max(2, r.pct)}%"></div></div>
       <span class="val"><b>${r.pct}</b><small>${dec(r.value, 2)}</small></span>
     </div>`).join("")}</div>
     <p class="note">Percentile against ${POSITIONS[p.pos]}s with ${MIN_PEER_MINS}+ minutes (the big number; 50 is average). The small number is the raw rate.${
-      p.mins < MIN_PEER_MINS ? " This player has fewer minutes than that, so treat these with care." : ""}${
-      p.us ? "" : " No Understat match, so shot-based stats are missing."}</p>`;
+      p.mins < MIN_PEER_MINS ? " This player has fewer minutes than that, so treat these with care." : ""}</p>`;
 }
 
-// ---------- shot map ----------
+// ---------- output panels ----------
 
-const SHOT_RESULTS = { Goal: "Goal", SavedShot: "Saved", MissedShots: "Missed", BlockedShot: "Blocked", ShotOnPost: "Hit the post", OwnGoal: "Own goal" };
-const SITUATIONS = { OpenPlay: "Open play", FromCorner: "From a corner", SetPiece: "Set piece", DirectFreekick: "Direct free kick", Penalty: "Penalty" };
-
-function shotMap(container, shots) {
-  const W = 68, H = 53;
-  const pts = shots.map((s) => ({ ...s, cx: s.y * W, cy: Math.min(H - 1, Math.max(0.6, (1 - s.x) * 105)), r: 0.8 + Math.sqrt(s.xg) * 3.2 }))
-    .sort((a, b) => (a.result === "Goal") - (b.result === "Goal") || b.r - a.r);
-  container.innerHTML = `
-    <svg viewBox="-2 -3 ${W + 4} ${H + 4}" role="img" aria-label="Shot map">
-      <defs><linearGradient id="turf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2b0634"/><stop offset="1" stop-color="#160219"/></linearGradient></defs>
-      <rect class="turf" x="-2" y="-3" width="${W + 4}" height="${H + 4}" rx="2"></rect>
-      <g class="lines">
-        <rect x="0" y="0" width="${W}" height="52.5"></rect>
-        <rect x="13.84" y="0" width="40.32" height="16.5"></rect>
-        <rect x="24.84" y="0" width="18.32" height="5.5"></rect>
-        <rect x="30.34" y="-1.6" width="7.32" height="1.6"></rect>
-        <circle cx="34" cy="11" r="0.3" fill="rgba(4,245,255,0.5)"></circle>
-        <path d="M26.69 16.5A9.15 9.15 0 0 0 41.31 16.5"></path>
-        <path d="M24.85 52.5A9.15 9.15 0 0 1 43.15 52.5"></path>
-      </g>
-      <g>${pts.map((s, i) => `<circle class="shot ${s.result === "Goal" ? "goal" : "miss"}" data-i="${i}" cx="${s.cx.toFixed(2)}" cy="${s.cy.toFixed(2)}" r="${s.r.toFixed(2)}"></circle>`).join("")}</g>
-    </svg>
-    <div class="tooltip"></div>`;
-  const tt = container.querySelector(".tooltip");
-  container.querySelector("svg").addEventListener("mousemove", (e) => {
-    const i = e.target.dataset?.i;
-    if (i == null) { tt.style.display = "none"; return; }
-    const s = pts[i];
-    showTip(container, tt, `<b>${esc(SHOT_RESULTS[s.result] || s.result)}</b> · ${s.minute}'<br>
-      xG ${s.xg.toFixed(2)} · ${esc(SITUATIONS[s.situation] || s.situation || "")}<br>
-      <span class="muted">${s.home ? "vs" : "at"} ${esc(s.opp || "")} · ${esc(s.date)}</span>`, e);
-  });
-  container.querySelector("svg").addEventListener("mouseleave", () => { tt.style.display = "none"; });
-}
-
-function shotSummary(shots) {
-  const np = shots.filter((s) => s.situation !== "Penalty");
-  const goals = shots.filter((s) => s.result === "Goal").length;
-  const xg = shots.reduce((a, s) => a + s.xg, 0);
-  const onTarget = shots.filter((s) => s.result === "Goal" || s.result === "SavedShot").length;
+function attackSummary(p) {
+  const kv = (label, value, cls = "") => `<div><span>${label}</span><b class="${cls}">${value}</b></div>`;
+  const diff = (a, b) => kv(`${a.label} − ${b.label}`, signed(a.v - b.v), a.v - b.v >= 0 ? "up" : "down");
   return `<div class="kv">
-    <div><span>Shots</span><b>${shots.length}</b></div>
-    <div><span>Goals</span><b>${goals}</b></div>
-    <div><span>xG</span><b>${dec(xg, 2)}</b></div>
-    <div><span>npxG</span><b>${dec(np.reduce((a, s) => a + s.xg, 0), 2)}</b></div>
-    <div><span>On target</span><b>${onTarget}</b></div>
-    <div><span>xG per shot</span><b>${dec(shots.length ? xg / shots.length : null, 2)}</b></div>
-    <div><span>Big chances</span><b>${shots.filter((s) => s.xg >= 0.3).length}</b></div>
-    <div><span>Goals − xG</span><b class="${goals - xg >= 0 ? "up" : "down"}">${signed(goals - xg)}</b></div>
-  </div>`;
+    ${kv("Goals", p.goals)}${kv("xG", dec(p.xg, 2))}
+    ${kv("Assists", p.assists)}${kv("xA", dec(p.xa, 2))}
+    ${diff({ label: "Goals", v: p.goals }, { label: "xG", v: p.xg })}${diff({ label: "Assists", v: p.assists }, { label: "xA", v: p.xa })}
+    ${kv("Threat", dec(p.threat, 0))}${kv("Creativity", dec(p.creativity, 0))}
+  </div>
+  <p class="note">Above zero means scoring or assisting more than the chances suggest, which often cools off; below zero can mean returns are due. Threat and creativity are FPL's ratings of shooting and chance-creating positions.</p>`;
 }
 
 function keeperSummary(p) {
@@ -381,7 +336,7 @@ async function renderPlayer(id) {
     ? tile("Saves", p.saves, `${dec(per90(p.saves, p.mins), 1)} per 90`) + tile("Clean sheets", p.cs)
     : p.pos === 2
       ? tile("Def. contributions", p.defcon, `${dec(per90(p.defcon, p.mins), 1)} per 90`) + tile("Clean sheets", p.cs)
-      : tile("xG / xA", `${dec(p.xg, 1)} / ${dec(p.xa, 1)}`, p.us ? `${p.us.shots} shots · ${p.us.keyPasses} key passes` : "") + tile("ICT index", dec(p.ict, 1));
+      : tile("xG / xA", `${dec(p.xg, 1)} / ${dec(p.xa, 1)}`, `${dec(per90(p.xgi, p.mins), 2)} xGI per 90`) + tile("ICT index", dec(p.ict, 1));
 
   app.innerHTML = `
     <a class="back" href="#/players">← All players</a>
@@ -393,7 +348,6 @@ async function renderPlayer(id) {
           <div class="meta">
             <span class="chip">Selected by ${dec(p.own)}%</span>
             <span class="chip">#${rankIn("points")} ${POSITIONS[p.pos]} by points</span>
-            ${p.us ? `<a class="chip" href="https://understat.com/player/${p.us.id}" target="_blank" rel="noopener">Understat ↗</a>` : ""}
           </div>
         </div>
         <div class="price">
@@ -416,30 +370,17 @@ async function renderPlayer(id) {
 
     <div class="grid-2">
       <section><h2>Percentile profile</h2><div class="panel pad">${percentilePanel(p)}</div></section>
-      <section><h2>${p.pos === 1 ? "Goalkeeping" : "Shot map"}</h2><div class="panel pad" id="shots-panel">
-        ${p.pos === 1 ? keeperSummary(p) : '<p class="muted">Loading shots…</p>'}</div></section>
+      <section><h2>${p.pos === 1 ? "Goalkeeping" : "Attacking output"}</h2><div class="panel pad">
+        ${p.pos === 1 ? keeperSummary(p) : attackSummary(p)}</div></section>
     </div>
     <div id="history"><p class="muted">Loading gameweek history…</p></div>`;
 
   let detail;
   try { detail = await playerDetail(id); } catch {
     document.getElementById("history").innerHTML = '<div class="empty">No gameweek history saved for this player yet.</div>';
-    if (p.pos !== 1) document.getElementById("shots-panel").innerHTML = '<p class="muted">No shot data saved.</p>';
     return;
   }
   if (location.hash !== `#/player/${id}`) return; // navigated away while loading
-
-  if (p.pos !== 1) {
-    const panel = document.getElementById("shots-panel");
-    if (detail.shots.length) {
-      panel.innerHTML = `<div class="shotmap-wrap"><div><div class="pitch chart" id="pitch"></div>
-        <div class="shot-legend"><span><i style="background:var(--green)"></i>Goal</span><span><i style="border:1px solid #fff;background:rgba(255,255,255,.1)"></i>No goal</span><span>Bigger circle = higher xG</span></div></div>
-        <div>${shotSummary(detail.shots)}</div></div>`;
-      shotMap(document.getElementById("pitch"), detail.shots);
-    } else {
-      panel.innerHTML = `<div class="empty">${p.us ? "No shots yet this season." : "No Understat match for this player, so there's no shot data."}</div>`;
-    }
-  }
 
   const history = detail.history;
   const el = document.getElementById("history");

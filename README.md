@@ -2,15 +2,15 @@
 
 Premier League player data for Fantasy Premier League, hosted on GitHub Pages.
 
-- **Players**: every player in Overview, Attack, Defence and Value views: price, points, form, ownership, xG/xA, Understat shots, key passes, xGChain, defensive contributions, points per £m and more. Sort by any column; filter by name, position, team, price and minutes.
-- **Player profiles**: percentile bars against players in the same position, an Understat shot map, points and price for each gameweek, and a row per game. Goalkeepers get saves, xG conceded and goals prevented instead of a shot map.
+- **Players**: every player in Overview, Attack, Defence and Value views: price, points, form, ownership, xG/xA per 90, threat, creativity, ICT, defensive contributions, tackles, recoveries, points per £m and more. Sort by any column; filter by name, position, team, price and minutes.
+- **Player profiles**: percentile bars against players in the same position, goals vs xG and assists vs xA, points and price for each gameweek, and a row per game. Goalkeepers get saves, xG conceded and goals prevented instead.
 - **My Team**: your squad on a pitch with this gameweek's points, your rank and points history, chips used, and a transfer planner that checks budget and the three-per-club rule. Plans are saved in your browser only.
 - **Fixtures**: each team's next gameweeks, coloured by FPL's difficulty rating, with doubles and blanks shown.
 - **Prices**: risers and fallers since the last daily snapshot, plus the most transferred in and out this gameweek.
 
 ## How it works
 
-`scripts/fetch_data.py` downloads the official FPL API into `data/`, and `scripts/understat.py` adds Understat season stats and shots, matching players by team and name. If Understat is unavailable, the last good copy is kept. The **Update data and deploy** workflow runs it twice a day (02:23 and 19:23 UTC), commits the data, and deploys the site. The browser can't call the FPL API directly, so the site reads the committed JSON files.
+`scripts/fetch_data.py` downloads the official FPL API into `data/`. The **Update data and deploy** workflow runs it twice a day (02:23 and 19:23 UTC), commits the data, and deploys the site. The browser can't call the FPL API directly, so the site reads the committed JSON files.
 
 FPL doesn't publish past prices, so the daily price history in `data/prices.json` starts from the first run. Gameweek-by-gameweek prices on player pages come from FPL and cover the whole season.
 

@@ -240,18 +240,7 @@ td.hot { color: var(--green); font-weight: 600; }
 }
 .tooltip b { font-weight: 700; color: var(--green); }
 
-/* ---------- shot map ---------- */
-.shotmap-wrap { display: grid; grid-template-columns: minmax(260px, 1.25fr) 1fr; gap: 18px; align-items: start; }
-.pitch { position: relative; }
-.pitch svg { display: block; width: 100%; height: auto; }
-.pitch .turf { fill: url(#turf); }
-.pitch .lines { fill: none; stroke: rgba(4, 245, 255, 0.35); stroke-width: 0.35; }
-.pitch .shot { stroke-width: 0.35; cursor: pointer; transition: r 0.1s; }
-.pitch .shot.goal { fill: var(--green); stroke: #0e0013; filter: drop-shadow(0 0 1.2px rgba(0, 255, 133, 0.9)); }
-.pitch .shot.miss { fill: rgba(255, 255, 255, 0.10); stroke: rgba(255, 255, 255, 0.7); }
-.pitch .shot:hover { stroke: var(--cyan); stroke-width: 0.6; }
-.shot-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--ink-2); margin-top: 10px; }
-.shot-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+/* ---------- key-value grid ---------- */
 .kv { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .kv div { padding: 10px 12px; border-radius: 10px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line); }
 .kv span { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
@@ -299,7 +288,7 @@ td.hot { color: var(--green); font-weight: 600; }
 .warn { color: var(--gold); font-size: 12px; }
 
 @media (max-width: 900px) {
-  .squad-layout, .shotmap-wrap { grid-template-columns: 1fr; }
+  .squad-layout { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
   main { padding: 20px 14px 40px; }

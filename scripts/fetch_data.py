@@ -4,9 +4,9 @@
 Writes:
   data/meta.json         when the data was fetched and the current gameweek
   data/teams.json        the 20 Premier League teams
-  data/players.json      every player with season stats (plus Understat totals when matched)
+  data/players.json      every player with season stats
   data/fixtures.json     every fixture with FPL difficulty ratings
-  data/players/<id>.json one player's gameweek history and Understat shots
+  data/players/<id>.json one player's gameweek-by-gameweek history
   data/prices.json       one price snapshot per day, appended on each run
   data/myteam.json       the FPL team named in config.json, if one is set
 
@@ -21,8 +21,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-
-import understat
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 DATA = os.path.join(ROOT, "data")
@@ -235,18 +233,6 @@ def main():
     now = datetime.datetime.now(datetime.timezone.utc)
     season = int(events[0]["deadline_time"][:4]) if events else now.year
 
-    # Understat is a bonus: if it fails, keep the last good copy rather than failing the run.
-    shots_by_player = {}
-    previous = {p["id"]: p.get("us") for p in read("players.json", [])}
-    try:
-        matched, shots_by_player = understat.enrich(players, teams, season, fetch_json)
-        print(f"Understat: matched {matched} of {sum(1 for p in players if p['mins'])} players with minutes.")
-    except Exception as err:  # noqa: BLE001 - any Understat failure is non-fatal
-        print(f"::warning::Understat fetch failed, keeping previous data: {err}", file=sys.stderr)
-        for p in players:
-            if previous.get(p["id"]):
-                p["us"] = previous[p["id"]]
-
     write("meta.json", {
         "updated": now.isoformat(timespec="seconds"),
         "currentGw": current,
@@ -274,11 +260,7 @@ def main():
 
     def save_player(pid):
         summary = get(f"element-summary/{pid}/")
-        shots = shots_by_player.get(pid)
-        if shots is None:  # Understat failed for this player; keep the shots we had
-            old = read(f"players/{pid}.json", {})
-            shots = old.get("shots", []) if isinstance(old, dict) else []
-        write(f"players/{pid}.json", {"history": [history_row(h) for h in summary["history"]], "shots": shots})
+        write(f"players/{pid}.json", {"history": [history_row(h) for h in summary["history"]]})
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(save_player, [p["id"] for p in players]))
