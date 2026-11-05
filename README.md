@@ -12,7 +12,7 @@ Premier League player data for Fantasy Premier League, hosted on GitHub Pages.
 
 ## How it works
 
-`scripts/fetch_data.py` downloads the official FPL API into `data/`. The **Update data and deploy** workflow runs it twice a day (02:23 and 19:23 UTC), commits the data, and deploys the site. The browser can't call the FPL API directly, so the site reads the committed JSON files.
+`scripts/fetch_data.py` downloads the official FPL API into `data/`. The **Update data and deploy** workflow checks hourly and refreshes twice a day (02:23 and 19:23 UTC) and within two hours after every gameweek deadline, when FPL makes new teams public. It commits the data and deploys the site. The browser can't call the FPL API directly, so the site reads the committed JSON files.
 
 FPL doesn't publish past prices, so the daily price history in `data/prices.json` starts from the first run. Gameweek-by-gameweek prices on player pages come from FPL and cover the whole season.
 

@@ -2,8 +2,9 @@ name: Update data and deploy
 
 on:
   schedule:
-    # FPL prices change around 01:30 UK time; the evening run picks up match results.
-    - cron: "23 2,19 * * *"
+    # Hourly check; scripts/should_run.py only refreshes at 02:xx and 19:xx UTC (after price
+    # changes and evening matches) or within two hours after a gameweek deadline.
+    - cron: "23 * * * *"
   workflow_dispatch:
   push:
     branches: [main]
@@ -20,13 +21,19 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python scripts/fetch_data.py
+      - id: gate
+        run: python scripts/should_run.py
+      - if: steps.gate.outputs.run == 'true'
+        run: python scripts/fetch_data.py
       - name: Claude advice (only when the ANTHROPIC_API_KEY secret is set)
+        if: steps.gate.outputs.run == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
@@ -34,6 +41,7 @@ jobs:
           pip install --quiet anthropic
           python scripts/ai_advice.py || echo "::warning::Claude advice failed; the rest of the update continues."
       - name: Commit data
+        if: steps.gate.outputs.run == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -45,6 +53,7 @@ jobs:
 
   deploy:
     needs: update
+    if: needs.update.outputs.run == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
