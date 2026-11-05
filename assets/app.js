@@ -88,6 +88,15 @@ function statusFlag(p) {
   return `<span class="flag ${out ? "out" : ""}" title="${esc(p.news || "Availability doubt")}">${esc(text)}</span>`;
 }
 
+// Set-piece duties FPL lists for the player (first choice only, to keep tables tidy).
+function roleTags(p) {
+  const tags = [];
+  if (p.penOrder === 1) tags.push(["PEN", "First-choice penalty taker"]);
+  if (p.fkOrder === 1) tags.push(["FK", "First-choice direct free kicks"]);
+  if (p.cornerOrder === 1) tags.push(["CRN", "First-choice corners and indirect free kicks"]);
+  return tags.map(([t, title]) => `<span class="role" title="${title}">${t}</span>`).join("");
+}
+
 function emptyState(html) {
   app.innerHTML = `<div class="empty">${html}</div>`;
 }
@@ -243,7 +252,7 @@ function fillPlayerRows() {
   document.getElementById("rows").innerHTML = rows.slice(0, 400).map((p, i) => `
     <tr class="clickable" data-id="${p.id}">
       <td class="rank">${i + 1}</td>
-      <td class="name left"><span class="who">${photo(p, "sm")}${esc(p.name)}${statusFlag(p)}</span></td>
+      <td class="name left"><span class="who">${photo(p, "sm")}${esc(p.name)}${statusFlag(p)}${roleTags(p)}</span></td>
       <td class="left">${teamPill(p.team)}</td>
       <td class="left">${posTag(p.pos)}</td>
       ${view.cols.map((k) => {
@@ -383,6 +392,39 @@ const TREND_METRICS = {
   4: [["xgi", "xGI"], ["ict", "ICT index"], ["bps", "BPS"], ["mins", "Minutes"]],
 };
 
+const ORDINAL = { 1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th" };
+function setPieceChips(p) {
+  return [["penOrder", "Penalties"], ["fkOrder", "Direct free kicks"], ["cornerOrder", "Corners"]]
+    .filter(([k]) => p[k]).map(([k, label]) => `<span class="chip role-chip">${label}: ${ORDINAL[p[k]] || `#${p[k]}`} choice</span>`).join("");
+}
+
+function projectionTable(p) {
+  const from = firstUpcomingGw();
+  const proj = Model.project(p, from, HORIZON);
+  const av = proj.av;
+  const rows = proj.byGw.flatMap((g) => g.detail.length ? g.detail.map((d) => ({ gw: g.gw, ...d })) : [{ gw: g.gw, blank: true }]);
+  const f1 = (v) => (Math.abs(v) < 0.05 ? '<span class="muted">0</span>' : dec(v, 1));
+  const gk = p.pos === 1;
+  const pen = Model.penaltyShare(p);
+  return `<div class="table-wrap"><table class="proj">
+    <thead><tr><th>GW</th><th class="left">Opponent</th><th>Team xG</th><th>Opp. xG</th><th>Clean sheet</th>
+      <th>Appear.</th><th>Goals</th><th>Assists</th><th>Pens</th><th>CS</th><th>${gk ? "Saves" : "Def. contr."}</th><th>Bonus</th><th>Conceded &amp; cards</th><th>xPts</th></tr></thead>
+    <tbody>${rows.map((r) => r.blank
+      ? `<tr><td>${r.gw}</td><td class="left muted" colspan="13">No fixture (blank gameweek)</td></tr>`
+      : `<tr><td>${r.gw}</td><td class="left">${fdrChip(r.fx)}</td>
+        <td>${dec(r.goals?.scored, 2)}</td><td>${dec(r.goals?.conceded, 2)}</td><td>${r.goals ? `${Math.round(r.goals.csProb * 100)}%` : "–"}</td>
+        <td>${f1(r.parts.appearance)}</td><td>${f1(r.parts.goals)}</td><td>${f1(r.parts.assists)}</td><td>${f1(r.parts.penalties)}</td>
+        <td>${f1(r.parts.cleanSheet)}</td><td>${f1(gk ? r.parts.saves : r.parts.defcon)}</td><td>${f1(r.parts.bonus)}</td>
+        <td>${f1(r.parts.conceded + r.parts.cards)}</td><td class="hot">${dec(r.total, 1)}</td></tr>`).join("")}
+      <tr class="total"><td colspan="13" class="left">Total, gameweeks ${from}–${from + HORIZON - 1}</td><td class="hot">${dec(proj.total, 1)}</td></tr>
+    </tbody></table></div>
+  <p class="note">Expected ${Math.round(av.mins)} minutes a match, ${Math.round(av.p60 * 100)}% chance of playing 60+ (recent starts count more than the season)${
+    av.fit < 1 ? `, adjusted for a ${Math.round(av.fit * 100)}% chance of being fit` : ""}.
+    Team and opponent xG come from each side's home or away record, weighted toward recent matches.${
+    pen ? ` On penalties: expects to take ${Math.round(pen * 100)}% of the team's spot kicks.` : ""}
+    Corners and free kicks are already in a player's xG and xA.</p>`;
+}
+
 function cumulative(values) {
   let run = 0;
   return values.map((v) => +(run += v).toFixed(2));
@@ -412,6 +454,7 @@ async function renderPlayer(id) {
               <span class="chip">Selected by ${dec(p.own)}%</span>
               <span class="chip">#${rankIn("points")} ${POSITIONS[p.pos]} by points</span>
               <span class="chip">#${rankIn("form")} ${POSITIONS[p.pos]} by form</span>
+              ${setPieceChips(p)}
             </div>
           </div>
         </div>
@@ -438,6 +481,8 @@ async function renderPlayer(id) {
       <section><h2>${p.pos === 1 ? "Goalkeeping" : "Attacking output"}</h2><div class="panel pad">
         ${p.pos === 1 ? keeperSummary(p) : attackSummary(p)}</div></section>
     </div>
+    <h2>Projection · next ${HORIZON} gameweeks</h2>
+    ${projectionTable(p)}
     <div id="history"><p class="muted">Loading gameweek history…</p></div>`;
 
   let detail;
@@ -1161,7 +1206,7 @@ function renderMoneyball() {
     document.getElementById("mb-count").textContent = `${list.length} players`;
     document.getElementById("mb-rows").innerHTML = list.slice(0, 60).map((r, i) => `
       <tr class="clickable" data-id="${r.p.id}"><td class="rank">${i + 1}</td>
-        <td class="name left"><span class="who">${photo(r.p, "sm")}${esc(r.p.name)}${statusFlag(r.p)}</span></td>
+        <td class="name left"><span class="who">${photo(r.p, "sm")}${esc(r.p.name)}${statusFlag(r.p)}${roleTags(r.p)}</span></td>
         <td class="left">${teamPill(r.p.team)}</td><td class="left">${posTag(r.p.pos)}</td>
         ${Object.entries(MB_COLS).map(([k, c]) => `<td class="${k === v.sort ? "hot" : ""}">${c.fmt(c.get(r))}</td>`).join("")}
         <td class="left">${(upcomingByTeam.get(r.p.team) || []).slice(0, 3).map((fx) => fdrChip(fx, true)).join("")}</td></tr>`).join("");

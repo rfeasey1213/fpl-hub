@@ -118,12 +118,16 @@ def player_row(p):
         "transfersIn": p["transfers_in_event"],
         "transfersOut": p["transfers_out_event"],
         "code": p["code"],
+        "penOrder": p.get("penalties_order"),
+        "fkOrder": p.get("direct_freekicks_order"),
+        "cornerOrder": p.get("corners_and_indirect_freekicks_order"),
     }
 
 
 def history_row(h):
     return {
         "gw": h["round"],
+        "fixture": h.get("fixture"),
         "opp": h["opponent_team"],
         "home": h["was_home"],
         "kickoff": h["kickoff_time"],
@@ -200,6 +204,41 @@ def find_photo_template(players):
         except (urllib.error.URLError, TimeoutError):
             continue
     return None
+
+
+RECENT_MATCHES = 5
+
+
+def team_match_logs(fixtures, histories):
+    """Per team, every finished match with the xG each side created (summed from player histories)."""
+    by_id = {f["id"]: f for f in fixtures}
+    logs = {}
+    for rows in histories.values():
+        for r in rows:
+            f = by_id.get(r["fixture"])
+            if not f or not (f["finished"] or f.get("finished_provisional")):
+                continue
+            team = f["team_h"] if r["home"] else f["team_a"]
+            m = logs.setdefault(team, {}).setdefault(f["id"], {
+                "fixture": f["id"], "gw": f["event"], "kickoff": f["kickoff_time"], "home": r["home"], "opp": r["opp"],
+                "xg": 0.0, "gf": f["team_h_score"] if r["home"] else f["team_a_score"],
+                "ga": f["team_a_score"] if r["home"] else f["team_h_score"],
+            })
+            m["xg"] += r["xg"]
+    for team, matches in logs.items():
+        for m in matches.values():
+            m["xg"] = round(m["xg"], 2)
+            m["xga"] = round(logs.get(m["opp"], {}).get(m["fixture"], {}).get("xg", 0.0), 2)
+    return {team: sorted(ms.values(), key=lambda m: m["kickoff"] or "") for team, ms in logs.items()}
+
+
+def recent_form(rows, team_log):
+    """The player's totals across their team's last few matches (0 for matches they missed)."""
+    recent = {m["fixture"] for m in team_log[-RECENT_MATCHES:]}
+    played = [r for r in rows if r["fixture"] in recent]
+    total = lambda key: round(sum(r.get(key, 0) for r in played), 2)
+    return {"games": len(recent), "mins": total("mins"), "starts": total("starts"), "xg": total("xg"), "xa": total("xa"),
+            "defcon": total("defcon"), "bonus": total("bonus"), "saves": total("saves")}
 
 
 def team_id_from_config():
@@ -304,8 +343,6 @@ def main():
             for e in events if e.get("finished") or e.get("is_current")
         ],
     })
-    write("teams.json", teams)
-    write("players.json", players)
     write("fixtures.json", [
         {
             "id": f["id"],
@@ -323,11 +360,21 @@ def main():
     ])
 
     def save_player(pid):
-        summary = get(f"element-summary/{pid}/")
-        write(f"players/{pid}.json", {"history": [history_row(h) for h in summary["history"]]})
+        rows = [history_row(h) for h in get(f"element-summary/{pid}/")["history"]]
+        write(f"players/{pid}.json", {"history": rows})
+        return pid, rows
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        list(pool.map(save_player, [p["id"] for p in players]))
+        histories = dict(pool.map(save_player, [p["id"] for p in players]))
+
+    # Team home/away and recent xG, and each player's recent minutes and output, for the projection model.
+    logs = team_match_logs(fixtures, histories)
+    for t in teams:
+        t["matches"] = logs.get(t["id"], [])
+    for p in players:
+        p["recent"] = recent_form(histories.get(p["id"], []), logs.get(p["team"], []))
+    write("teams.json", teams)
+    write("players.json", players)
 
     update_prices(players, now.date().isoformat())
 
