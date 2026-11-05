@@ -31,6 +31,7 @@ async function loadData() {
   players.forEach((p) => playerById.set(p.id, p));
   upcomingByTeam = buildUpcoming();
   Model.init(D, upcomingByTeam);
+  Ratings.compute(D, firstUpcomingGw());
 }
 
 function firstUpcomingGw() {
@@ -88,6 +89,11 @@ function statusFlag(p) {
   return `<span class="flag ${out ? "out" : ""}" title="${esc(p.news || "Availability doubt")}">${esc(text)}</span>`;
 }
 
+function ratingBadge(p, size = "") {
+  const r = Ratings.get(p.id);
+  return r ? `<span class="ovr ovr-${Ratings.tier(r.ovr)} ${size}" title="Overall rating">${r.ovr}</span>` : "";
+}
+
 // Set-piece duties FPL lists for the player (first choice only, to keep tables tidy).
 function roleTags(p) {
   const tags = [];
@@ -132,8 +138,16 @@ function shirt(p) {
 
 // ---------- players ----------
 
+const rating = (k) => (p) => Ratings.get(p.id)?.[k] ?? null;
 const COLUMNS = {
   price: { label: "Price", get: (p) => p.price, fmt: money },
+  ovr: { label: "Rating", get: rating("ovr"), fmt: (v, p) => ratingBadge(p) },
+  rFut: { label: "FUT", get: rating("fut") },
+  rUnd: { label: "UND", get: rating("und") },
+  rPer: { label: "PER", get: rating("per") },
+  rFrm: { label: "FRM", get: rating("frm") },
+  rMin: { label: "MIN", get: rating("min") },
+  rVal: { label: "VAL", get: rating("val") },
   points: { label: "Pts", get: (p) => p.points, hot: true },
   form: { label: "Form", get: (p) => p.form, fmt: (v) => dec(v) },
   ppg: { label: "PPG", get: (p) => p.ppg, fmt: (v) => dec(v) },
@@ -164,9 +178,10 @@ const COLUMNS = {
   net: { label: "Net transfers", get: (p) => p.transfersIn - p.transfersOut, fmt: (v) => `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "+" : ""}${v.toLocaleString()}</span>` },
 };
 const VIEWS = {
-  overview: { label: "Overview", cols: ["price", "points", "form", "ppg", "own", "mins", "goals", "assists", "xgi", "bonus"], next: true, sort: "points" },
+  overview: { label: "Overview", cols: ["price", "ovr", "points", "form", "ppg", "own", "mins", "goals", "assists", "xgi", "bonus"], next: true, sort: "points" },
   attack: { label: "Attack", cols: ["price", "points", "goals", "xg", "xg90", "assists", "xa", "xa90", "xgi90", "threat", "creativity", "ict"], sort: "xgi90" },
   defence: { label: "Defence", cols: ["price", "points", "cs", "gc", "xgc", "defcon", "cbi", "tackles", "recoveries", "saves"], sort: "defcon" },
+  ratings: { label: "Ratings", cols: ["price", "ovr", "rFut", "rUnd", "rPer", "rFrm", "rMin", "rVal", "points"], sort: "ovr" },
   value: { label: "Value", cols: ["price", "points", "ptsPerM", "ppg", "form", "formPerM", "xgi90", "own", "net"], next: true, sort: "ptsPerM" },
 };
 const NAME_SORTS = { name: (p) => p.name, team: (p) => teamShort(p.team), pos: (p) => p.pos };
@@ -257,7 +272,7 @@ function fillPlayerRows() {
       <td class="left">${posTag(p.pos)}</td>
       ${view.cols.map((k) => {
         const c = COLUMNS[k], val = c.get(p);
-        return `<td class="${k === v.sort || c.hot ? "hot" : ""}">${val == null ? '<span class="muted">–</span>' : c.fmt ? c.fmt(val) : val}</td>`;
+        return `<td class="${k === v.sort || c.hot ? "hot" : ""}">${val == null ? '<span class="muted">–</span>' : c.fmt ? c.fmt(val, p) : val}</td>`;
       }).join("")}
       ${view.next ? `<td class="left">${(upcomingByTeam.get(p.team) || []).slice(0, 3).map((fx) => fdrChip(fx)).join("")}</td>` : ""}
     </tr>`).join("") + (rows.length > 400 ? `<tr><td colspan="99" class="muted left">Showing the top 400 – filter to narrow it down.</td></tr>` : "");
@@ -446,6 +461,7 @@ async function renderPlayer(id) {
     <section class="hero">
       <div class="hero-top">
         <div class="hero-id">
+          ${ratingCard(p)}
           ${photo(p, "xl")}
           <div>
             <div class="eyebrow">${POSITION_NAMES[p.pos]} · ${esc(teamName(p.team))}</div>
@@ -595,7 +611,7 @@ function renderMyTeam() {
       ${statusFlag(p)}
       ${photo(p, "card-photo")}
       <div class="nm">${esc(p.name)}</div>
-      <div class="sub">${next ? fdrChip(next, true) : '<span class="muted">–</span>'}</div>
+      <div class="sub">${ratingBadge(p, "xs")} ${next ? fdrChip(next, true) : '<span class="muted">–</span>'}</div>
       <div class="pts">${real ? `${pts} pts` : `form ${dec(p.form)}`}</div>
     </div>`;
   };
@@ -921,6 +937,7 @@ const SCATTER_Y = {
   ppg: { label: "Points per game", get: (p) => p.ppg, fmt: (v) => dec(v, 1) },
 };
 const BOARDS = {
+  rating: { label: "Rating", get: (p) => Ratings.get(p.id)?.ovr ?? null, fmt: (v) => v },
   points: { label: "Points", get: (p) => p.points, fmt: (v) => v },
   form: { label: "Form", get: (p) => p.form, fmt: (v) => dec(v) },
   xgi: { label: "xGI", get: (p) => p.xgi, fmt: (v) => dec(v, 2) },
@@ -1092,6 +1109,7 @@ function valueTable() {
 
 const MB_COLS = {
   price: { label: "Price", get: (r) => r.p.price, fmt: money },
+  ovr: { label: "Rating", get: (r) => Ratings.get(r.p.id)?.ovr ?? 0, fmt: (v, r) => ratingBadge(r.p) },
   xpts: { label: `xPts next ${HORIZON}`, get: (r) => r.xpts, fmt: (v) => dec(v, 1) },
   surplus: { label: "Value over price", get: (r) => r.surplus, fmt: (v) => `<span class="${v >= 0 ? "up" : "down"}">${signed(v)}</span>` },
   perM: { label: "xPts per £m", get: (r) => r.perM, fmt: (v) => dec(v, 2) },
@@ -1125,7 +1143,7 @@ function mbCard(r) {
   return `<div class="card" data-id="${r.p.id}" title="${esc(r.p.full)}">
     ${statusFlag(r.p)}${photo(r.p, "card-photo")}
     <div class="nm">${esc(r.p.name)}</div>
-    <div class="sub">${money(r.p.price)} ${next ? fdrChip(next, true) : ""}</div>
+    <div class="sub">${ratingBadge(r.p, "xs")} ${money(r.p.price)} ${next ? fdrChip(next, true) : ""}</div>
     <div class="pts">${dec(r.xpts, 1)} xPts</div>
   </div>`;
 }
@@ -1208,7 +1226,7 @@ function renderMoneyball() {
       <tr class="clickable" data-id="${r.p.id}"><td class="rank">${i + 1}</td>
         <td class="name left"><span class="who">${photo(r.p, "sm")}${esc(r.p.name)}${statusFlag(r.p)}${roleTags(r.p)}</span></td>
         <td class="left">${teamPill(r.p.team)}</td><td class="left">${posTag(r.p.pos)}</td>
-        ${Object.entries(MB_COLS).map(([k, c]) => `<td class="${k === v.sort ? "hot" : ""}">${c.fmt(c.get(r))}</td>`).join("")}
+        ${Object.entries(MB_COLS).map(([k, c]) => `<td class="${k === v.sort ? "hot" : ""}">${c.fmt(c.get(r), r)}</td>`).join("")}
         <td class="left">${(upcomingByTeam.get(r.p.team) || []).slice(0, 3).map((fx) => fdrChip(fx, true)).join("")}</td></tr>`).join("");
   };
   fill();
@@ -1396,6 +1414,63 @@ function claudeHtml() {
   </div>`;
 }
 
+// ---------- ratings ----------
+
+const RATING_LABELS = { fut: "FUT", und: "UND", per: "PER", frm: "FRM", min: "MIN", val: "VAL" };
+const ratingsView = { pos: 3 };
+
+function ratingCard(p, compact = false) {
+  const r = Ratings.get(p.id);
+  if (!r) return "";
+  return `<div class="rcard rcard-${Ratings.tier(r.ovr)} ${compact ? "compact" : ""}">
+    <div class="rc-top"><span class="rc-ovr">${r.ovr}</span><span class="rc-pos">${POSITIONS[p.pos]}</span></div>
+    <div class="rc-stats">${Object.entries(RATING_LABELS).map(([k, l]) =>
+      `<span title="${Ratings.PARTS[k]}"><b>${r[k]}</b>${l}</span>`).join("")}</div>
+  </div>`;
+}
+
+function renderRatings() {
+  const pos = ratingsView.pos;
+  const ranked = D.players.filter((p) => p.pos === pos && Ratings.get(p.id))
+    .sort((a, b) => Ratings.get(b.id).ovr - Ratings.get(a.id).ovr || Ratings.get(b.id).fut - Ratings.get(a.id).fut);
+  const weights = Object.entries(Ratings.WEIGHTS).map(([k, w]) => `${RATING_LABELS[k]} ${Math.round(w * 100)}%`).join(" · ");
+
+  app.innerHTML = `
+    <section class="hero">
+      <div class="eyebrow">Player ratings · from gameweek ${firstUpcomingGw()}</div>
+      <h1>Ratings</h1>
+      <p class="lede">Every player rated 45–99 against others in the same position, blending what's coming with what they've done.
+        Each part is a percentile among regulars (270+ minutes): ${weights}. Value is shown but kept out of the overall.</p>
+      <div class="legend" style="margin-top:14px">${Object.entries(Ratings.PARTS).map(([k, t]) => `<span class="chip"><b>${RATING_LABELS[k]}</b>&nbsp;${t.split(": ")[1]}</span>`).join("")}</div>
+    </section>
+    <div class="filters">${segmented("r-pos", { 1: "Goalkeepers", 2: "Defenders", 3: "Midfielders", 4: "Forwards" }, String(pos))}</div>
+    <div class="fut-grid">${ranked.slice(0, 12).map((p) => `
+      <a class="fut-card fut-${Ratings.tier(Ratings.get(p.id).ovr)}" href="#/player/${p.id}">
+        <div class="fc-head"><span class="fc-ovr">${Ratings.get(p.id).ovr}</span><span class="fc-meta">${POSITIONS[p.pos]}<br>${esc(teamShort(p.team))}</span></div>
+        ${photo(p, "fc-photo")}
+        <div class="fc-name">${esc(p.name)}${roleTags(p)}</div>
+        <div class="fc-price">${money(p.price)} · ${dec(Ratings.get(p.id).xpts, 1)} xPts</div>
+        <div class="fc-stats">${Object.entries(RATING_LABELS).map(([k, l]) => `<span><b>${Ratings.get(p.id)[k]}</b>${l}</span>`).join("")}</div>
+      </a>`).join("")}</div>
+    <h2>All ${POSITION_NAMES[pos].toLowerCase()}s</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th class="rank">#</th><th class="left">Player</th><th class="left">Team</th><th>Price</th><th>Rating</th>${
+        Object.values(RATING_LABELS).map((l) => `<th>${l}</th>`).join("")}<th>xPts next 5</th><th>Pts</th><th class="left">Next 3</th></tr></thead>
+      <tbody id="r-rows">${ranked.map((p, i) => { const r = Ratings.get(p.id); return `
+        <tr class="clickable" data-id="${p.id}"><td class="rank">${i + 1}</td>
+          <td class="name left"><span class="who">${photo(p, "sm")}${esc(p.name)}${statusFlag(p)}${roleTags(p)}</span></td>
+          <td class="left">${teamPill(p.team)}</td><td>${money(p.price)}</td><td>${ratingBadge(p)}</td>
+          ${Object.keys(RATING_LABELS).map((k) => `<td class="${k === "val" ? "muted" : ""}">${r[k]}</td>`).join("")}
+          <td class="hot">${dec(r.xpts, 1)}</td><td>${p.points}</td>
+          <td class="left">${(upcomingByTeam.get(p.team) || []).slice(0, 3).map((fx) => fdrChip(fx, true)).join("")}</td></tr>`; }).join("")}
+      </tbody></table></div>`;
+  onRowClick(document.getElementById("r-rows"));
+  document.getElementById("r-pos").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    ratingsView.pos = +b.dataset.k; renderRatings();
+  });
+}
+
 // ---------- routing ----------
 
 function route() {
@@ -1408,6 +1483,7 @@ function route() {
   else if (page === "myteam") renderMyTeam();
   else if (page === "stats") renderStats();
   else if (page === "moneyball") renderMoneyball();
+  else if (page === "ratings") renderRatings();
   else if (page === "player") renderPlayer(+arg);
   else renderPlayers();
 }
