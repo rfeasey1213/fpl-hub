@@ -605,6 +605,7 @@ function renderMyTeam() {
     const p = s.p;
     const next = (upcomingByTeam.get(p.team) || [])[0];
     const real = !s.changed;
+    const upcoming = t.gw > (D.meta.currentGw || 0); // picks locked in, matches not started yet
     const pts = real ? s.pick.gwPoints * Math.max(1, s.pick.multiplier) : null;
     return `<div class="card ${teamView.selected === s.slot ? "selected" : ""} ${s.changed ? "new" : ""}" data-slot="${s.slot}" title="${esc(p.full)}">
       ${real && s.pick.captain ? `<span class="badge">${t.activeChip === "3xc" ? "3x" : "C"}</span>` : real && s.pick.vice ? '<span class="badge vice">V</span>' : ""}
@@ -612,7 +613,7 @@ function renderMyTeam() {
       ${photo(p, "card-photo")}
       <div class="nm">${esc(p.name)}</div>
       <div class="sub">${ratingBadge(p, "xs")} ${next ? fdrChip(next, true) : '<span class="muted">–</span>'}</div>
-      <div class="pts">${real ? `${pts} pts` : `form ${dec(p.form)}`}</div>
+      <div class="pts">${real && !upcoming ? `${pts} pts` : `${dec(Model.project(p, firstUpcomingGw(), 1).total, 1)} xPts`}</div>
     </div>`;
   };
   const starters = squad.filter((s) => s.slot <= 11);
@@ -635,7 +636,7 @@ function renderMyTeam() {
         </div>
       </div>
       <div class="tiles">
-        ${tile(`GW${t.gw} points`, t.gwPoints, t.gwRank ? `rank ${shortRank(t.gwRank)}` : "", true)}
+        ${tile(`GW${last?.gw ?? t.gw} points`, t.gwPoints, t.gwRank ? `rank ${shortRank(t.gwRank)}` : "", true)}
         ${tile("Total points", int(t.overallPoints))}
         ${tile("Team value", money(t.value))}
         ${tile("In the bank", money(t.bank))}

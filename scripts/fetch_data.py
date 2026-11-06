@@ -381,7 +381,9 @@ def main():
     team_id = team_id_from_config()
     if team_id:
         try:
-            write("myteam.json", fetch_my_team(team_id, current))
+            # Picks are public once a deadline passes, even before FPL marks that gameweek current.
+            locked = [e["id"] for e in events if datetime.datetime.fromisoformat(e["deadline_time"].replace("Z", "+00:00")) <= now]
+            write("myteam.json", fetch_my_team(team_id, max(locked, default=current)))
             print(f"Saved team {team_id}.")
         except Exception as err:  # noqa: BLE001 - a bad team ID shouldn't stop the rest
             print(f"::warning::Could not fetch FPL team {team_id}: {err}", file=sys.stderr)

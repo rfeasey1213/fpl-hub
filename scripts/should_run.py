@@ -1,36 +1,39 @@
 #!/usr/bin/env python3
 """Decide whether a scheduled run should refresh the data.
 
-The workflow is scheduled hourly, but only refreshes at 02:xx and 19:xx UTC (after overnight
-price changes and evening matches) or within two hours after a gameweek deadline, when
-FPL makes everyone's new teams public. Pushes and manual runs always refresh.
+The workflow is scheduled hourly, but GitHub often runs scheduled jobs late or skips them, so
+this doesn't depend on the clock time. A scheduled run refreshes when a gameweek deadline has
+passed since the last refresh (FPL makes everyone's new teams public at the deadline) or when
+the data is more than 8 hours old. Pushes and manual runs always refresh.
 Writes run=true/false to $GITHUB_OUTPUT.
 """
 import datetime
 import json
 import os
 
-REFRESH_HOURS = {2, 19}
-AFTER_DEADLINE = datetime.timedelta(minutes=120)
+MAX_AGE = datetime.timedelta(hours=8)
 
 
-def should_run(now, event, deadlines):
-    if event != "schedule" or now.hour in REFRESH_HOURS:
+def parse(ts):
+    return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def should_run(now, event, last_update, deadlines):
+    if event != "schedule" or last_update is None:
         return True
-    for d in deadlines:
-        passed = now - datetime.datetime.fromisoformat(d.replace("Z", "+00:00"))
-        if datetime.timedelta(0) <= passed <= AFTER_DEADLINE:
-            return True
-    return False
+    if now - last_update >= MAX_AGE:
+        return True
+    return any(last_update < parse(d) <= now for d in deadlines)
 
 
 def main():
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "meta.json")) as f:
-            deadlines = list(json.load(f).get("deadlines", {}).values())
-    except (FileNotFoundError, json.JSONDecodeError):
-        deadlines = []
-    run = should_run(datetime.datetime.now(datetime.timezone.utc), os.environ.get("GITHUB_EVENT_NAME", ""), deadlines)
+            meta = json.load(f)
+        last_update, deadlines = parse(meta["updated"]), list(meta.get("deadlines", {}).values())
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        last_update, deadlines = None, []
+    run = should_run(datetime.datetime.now(datetime.timezone.utc), os.environ.get("GITHUB_EVENT_NAME", ""), last_update, deadlines)
     print(f"Refresh: {run}")
     with open(os.environ.get("GITHUB_OUTPUT", os.devnull), "a") as out:
         out.write(f"run={'true' if run else 'false'}\n")

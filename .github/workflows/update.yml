@@ -2,8 +2,8 @@ name: Update data and deploy
 
 on:
   schedule:
-    # Hourly check; scripts/should_run.py only refreshes at 02:xx and 19:xx UTC (after price
-    # changes and evening matches) or within two hours after a gameweek deadline.
+    # Hourly check; scripts/should_run.py refreshes when a gameweek deadline has passed since
+    # the last refresh or the data is over 8 hours old (GitHub often runs schedules late).
     - cron: "23 * * * *"
   workflow_dispatch:
   push:
